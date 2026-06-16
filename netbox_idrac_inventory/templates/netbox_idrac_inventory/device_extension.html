@@ -1,0 +1,63 @@
+{% load helpers %}
+
+<div class="card">
+  <h5 class="card-header">
+    <i class="mdi mdi-server"></i> iDRAC Inventory
+  </h5>
+  <div class="card-body">
+
+    {% if dell_server %}
+      {# Summary table #}
+      <table class="table table-hover attr-table mb-3">
+        <tr>
+          <th scope="row">Service tag</th>
+          <td>{{ dell_server.service_tag|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Model</th>
+          <td>{{ dell_server.model|default:"—" }}</td>
+        </tr>
+        <tr>
+          <th scope="row">Sync status</th>
+          <td>
+            <span class="badge bg-{{ dell_server.get_sync_status_color }}">
+              {{ dell_server.get_sync_status_display }}
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row">Last synced</th>
+          <td>{{ dell_server.last_synced|placeholder }}</td>
+        </tr>
+      </table>
+
+      {# Action buttons #}
+      <div class="d-flex gap-2">
+        <a href="{{ dell_server.get_absolute_url }}" class="btn btn-sm btn-outline-secondary">
+          <i class="mdi mdi-eye"></i> View
+        </a>
+
+        {% if perms.netbox_idrac_inventory.change_dellserver %}
+        <form method="post"
+              action="{% url 'plugins:netbox_idrac_inventory:dellserver_sync' dell_server.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-warning">
+            <i class="mdi mdi-refresh"></i> Sync from iDRAC
+          </button>
+        </form>
+        {% endif %}
+      </div>
+
+    {% else %}
+      {# No DellServer linked yet #}
+      <p class="text-muted mb-2">No Dell server linked to this device.</p>
+      {% if perms.netbox_idrac_inventory.add_dellserver %}
+      <a href="{% url 'plugins:netbox_idrac_inventory:dellserver_add' %}?device={{ object.pk }}"
+         class="btn btn-sm btn-success">
+        <i class="mdi mdi-plus-thick"></i> Add Dell server
+      </a>
+      {% endif %}
+    {% endif %}
+
+  </div>
+</div>

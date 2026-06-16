@@ -1,0 +1,118 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+<div class="row mb-3">
+  {# Left column: identity & connection #}
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Dell Server</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Device</th>
+            <td>{{ object.device|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">iDRAC address</th>
+            <td>{{ object.idrac_address }}</td>
+          </tr>
+          <tr>
+            <th scope="row">iDRAC username</th>
+            <td>{{ object.idrac_username|default:"(plugin default)" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Service tag</th>
+            <td>{{ object.service_tag|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Model</th>
+            <td>{{ object.model|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">BIOS version</th>
+            <td>{{ object.bios_version|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">iDRAC firmware</th>
+            <td>{{ object.idrac_firmware|default:"—" }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# Right column: sync status #}
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Sync status</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Status</th>
+            <td>
+              <span class="badge bg-{{ object.get_sync_status_color }}">
+                {{ object.get_sync_status_display }}
+              </span>
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">Last synced</th>
+            <td>{{ object.last_synced|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Sync message</th>
+            <td>{{ object.sync_message|default:"—" }}</td>
+          </tr>
+        </table>
+
+        {# Sync button — only for users with change permission #}
+        {% if perms.netbox_idrac_inventory.change_dellserver %}
+        <form method="post"
+              action="{% url 'plugins:netbox_idrac_inventory:dellserver_sync' object.pk %}"
+              class="mt-3">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-warning btn-sm">
+            <i class="mdi mdi-refresh"></i> Sync from iDRAC
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# Comments #}
+{% if object.comments %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">Comments</h5>
+      <div class="card-body">
+        {{ object.comments|markdown }}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# Components table #}
+<div class="row">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">
+        Components
+        <span class="badge bg-secondary">{{ components_table.rows|length }}</span>
+      </h5>
+      <div class="card-body table-responsive">
+        {% include 'inc/table.html' with table=components_table %}
+      </div>
+      {% if components_table.rows|length > components_table.page.paginator.per_page|default:0 %}
+      <div class="card-footer">
+        {% include 'inc/table_footer.html' with table=components_table %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock content %}

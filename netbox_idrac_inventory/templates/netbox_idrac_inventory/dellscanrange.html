@@ -1,0 +1,80 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Scan range</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Name</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Enabled</th>
+            <td>{% checkmark object.enabled %}</td>
+          </tr>
+          <tr>
+            <th scope="row">Targets</th>
+            <td><pre class="mb-0">{{ object.targets }}</pre></td>
+          </tr>
+          <tr>
+            <th scope="row">iDRAC username</th>
+            <td>{{ object.idrac_username|default:"(plugin default)" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Site</th>
+            <td>{{ object.site|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Role</th>
+            <td>{{ object.role|linkify }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Last run</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Last run</th>
+            <td>{{ object.last_run|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Result</th>
+            <td>{{ object.message|default:"—" }}</td>
+          </tr>
+        </table>
+
+        {% if perms.netbox_idrac_inventory.change_dellscanrange %}
+        <form method="post"
+              action="{% url 'plugins:netbox_idrac_inventory:dellscanrange_run' object.pk %}"
+              class="mt-3">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i class="mdi mdi-radar"></i> Run scan
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if object.comments %}
+<div class="row mb-3">
+  <div class="col col-md-12">
+    <div class="card">
+      <h5 class="card-header">Comments</h5>
+      <div class="card-body">{{ object.comments|markdown }}</div>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

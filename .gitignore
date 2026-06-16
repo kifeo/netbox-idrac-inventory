@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.sqlite3
+dev/.env
+
+# Claude tooling (kept locally, not published)
+.claude/
+CLAUDE.md
+*.code-workspace

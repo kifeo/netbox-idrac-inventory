@@ -1,0 +1,68 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Dell Component</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Server</th>
+            <td>{{ object.server|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Component type</th>
+            <td>
+              <span class="badge bg-{{ object.get_component_type_color }}">
+                {{ object.get_component_type_display }}
+              </span>
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">Name</th>
+            <td>{{ object.name }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Manufacturer</th>
+            <td>{{ object.manufacturer|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Model</th>
+            <td>{{ object.model|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Serial</th>
+            <td>{{ object.serial|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Part number</th>
+            <td>{{ object.part_number|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Firmware</th>
+            <td>{{ object.firmware|default:"—" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Capacity (bytes)</th>
+            <td>{{ object.capacity_bytes|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# Raw iDRAC data #}
+  {% if object.data %}
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">Raw iDRAC data</h5>
+      <div class="card-body">
+        <pre class="mb-0" style="max-height: 400px; overflow-y: auto;">{{ object.data|json }}</pre>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock content %}

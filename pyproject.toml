@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netbox-idrac-inventory"
+version = "0.1.0"
+description = "NetBox plugin to synchronize Dell servers with NetBox via iDRAC Redfish"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Thomas Le Gentil", email = "thomas.legentil@gmail.com" }]
+keywords = ["netbox", "netbox-plugin", "dell", "idrac", "redfish"]
+classifiers = [
+    "Framework :: Django",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+]
+dependencies = [
+    "sushy>=5.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-django",
+    "responses",
+]
+
+[project.urls]
+Homepage = "https://github.com/tlegentil/netbox-idrac-inventory"
+
+[tool.setuptools.packages.find]
+include = ["netbox_idrac_inventory*"]
+
+[tool.setuptools.package-data]
+netbox_idrac_inventory = ["templates/**/*.html"]

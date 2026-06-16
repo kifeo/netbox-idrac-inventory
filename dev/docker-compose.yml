@@ -1,0 +1,100 @@
+# Local dev stack for the netbox-idrac-inventory plugin.
+# Run from this directory: `docker compose up --build`
+# NetBox UI -> http://localhost:8000  (admin / admin)
+
+x-netbox-common: &netbox-common
+  image: netbox-idrac-inventory:dev
+  environment:
+    # iDRAC creds (set in dev/.env). Read by configuration.py -> PLUGINS_CONFIG.
+    IDRAC_USERNAME: ${IDRAC_USERNAME:-root}
+    IDRAC_PASSWORD: ${IDRAC_PASSWORD:-}
+    IDRAC_VERIFY_SSL: ${IDRAC_VERIFY_SSL:-false}
+    IDRAC_TIMEOUT: ${IDRAC_TIMEOUT:-30}
+  volumes:
+    - ./configuration.py:/etc/netbox/config/configuration.py:ro,z
+    # Live-mount the package so edits apply on container restart.
+    - ../netbox_idrac_inventory:/opt/netbox-idrac-inventory/netbox_idrac_inventory:z
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: netbox
+    volumes:
+      - netbox-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - netbox-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  netbox:
+    <<: *netbox-common
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile
+      args:
+        VERSION: ${NETBOX_VERSION:-v4.2}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      IDRAC_USERNAME: ${IDRAC_USERNAME:-root}
+      IDRAC_PASSWORD: ${IDRAC_PASSWORD:-}
+      IDRAC_VERIFY_SSL: ${IDRAC_VERIFY_SSL:-false}
+      IDRAC_TIMEOUT: ${IDRAC_TIMEOUT:-30}
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: admin
+      SUPERUSER_API_TOKEN: 0123456789abcdef0123456789abcdef01234567
+    ports:
+      - "8000:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
+
+  # The sync job runs here, so this service needs the iDRAC creds too.
+  netbox-worker:
+    <<: *netbox-common
+    depends_on:
+      netbox:
+        condition: service_healthy
+    environment:
+      IDRAC_USERNAME: ${IDRAC_USERNAME:-root}
+      IDRAC_PASSWORD: ${IDRAC_PASSWORD:-}
+      IDRAC_VERIFY_SSL: ${IDRAC_VERIFY_SSL:-false}
+      IDRAC_TIMEOUT: ${IDRAC_TIMEOUT:-30}
+      SKIP_SUPERUSER: "true"
+    command:
+      - /opt/netbox/venv/bin/python
+      - /opt/netbox/netbox/manage.py
+      - rqworker
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -v grep | grep -q rqworker || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  netbox-postgres-data:
+  netbox-redis-data:
