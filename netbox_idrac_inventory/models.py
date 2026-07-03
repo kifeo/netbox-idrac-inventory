@@ -3,7 +3,6 @@
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.urls import reverse
-
 from netbox.models import NetBoxModel
 from netbox.models.features import JobsMixin
 

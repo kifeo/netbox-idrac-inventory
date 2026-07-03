@@ -17,7 +17,6 @@ It expects a `model` kwarg; we pass it via path() defaults dict.
 """
 
 from django.urls import path
-
 from netbox.views.generic import ObjectChangeLogView
 
 from .models import DellComponent, DellScanRange, DellServer
@@ -34,6 +33,7 @@ from .views import (
     DellScanRangeRunView,
     DellScanRangeView,
     DellServerBulkDeleteView,
+    DellServerBulkSyncView,
     DellServerDeleteView,
     DellServerEditView,
     DellServerListView,
@@ -85,6 +85,11 @@ urlpatterns = [
         "servers/delete/",
         DellServerBulkDeleteView.as_view(),
         name="dellserver_bulk_delete",
+    ),
+    path(
+        "servers/sync/",
+        DellServerBulkSyncView.as_view(),
+        name="dellserver_bulk_sync",
     ),
     # ------------------------------------------------------------------
     # DellComponent

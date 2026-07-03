@@ -42,7 +42,15 @@ REDIS = {
 # Dev-only secret (>= 50 chars). Replace for any real deployment.
 SECRET_KEY = "dev-only-secret-key-change-me-0123456789abcdefghijklmnop"
 
-DEBUG = True
+# Required by NetBox 4.6+ (v2 API tokens); ignored by older versions.
+# Integer keys, values >= 50 chars. Dev-only value — generate your own
+# for any real deployment.
+API_TOKEN_PEPPERS = {1: "dev-only-pepper-0123456789abcdefghijklmnopqrstuvwxyz"}
+
+# DEBUG=false is needed when running tests on NetBox 4.4+: DEBUG=True
+# installs the Django Debug Toolbar, which refuses to run under the test
+# runner. Default stays True for interactive development.
+DEBUG = os.environ.get("DEBUG", "true").lower() == "true"
 # Required so `manage.py makemigrations` is permitted (dev safeguard).
 DEVELOPER = True
 

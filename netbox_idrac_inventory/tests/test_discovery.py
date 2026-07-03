@@ -1,9 +1,8 @@
 # Tests for scan-range target expansion and the discovery engine.
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
-
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+from django.test import TestCase
 
 from netbox_idrac_inventory.models import DellScanRange, DellServer
 from netbox_idrac_inventory.utils import expand_targets
@@ -102,3 +101,47 @@ class DiscoverRangeTest(TestCase):
 
         mock_client.assert_not_called()  # never probed
         self.assertEqual(result["skipped"], 1)
+
+    def test_disabled_range_is_not_scanned(self):
+        from netbox_idrac_inventory.idrac.discovery import discover_range
+
+        scan = DellScanRange.objects.create(
+            name="off", targets="10.50.0.5", site=self.site, role=self.role,
+            enabled=False,
+        )
+        with patch(
+            "netbox_idrac_inventory.idrac.discovery.IdracClient"
+        ) as mock_client:
+            result = discover_range(scan)
+
+        mock_client.assert_not_called()
+        scan.refresh_from_db()
+        self.assertIn("disabled", scan.message)
+        self.assertIn("disabled", result["message"])
+
+    def test_allowed_networks_filters_targets(self):
+        from netbox_idrac_inventory.idrac.discovery import discover_range
+
+        config = {
+            "idrac_default_username": "root",
+            "idrac_default_password": "pw",
+            "idrac_verify_ssl": False,
+            "idrac_timeout": 30,
+            "manage_idrac_interface": False,
+            "allowed_networks": ["10.50.0.0/24"],
+        }
+        scan = self._range(targets="10.50.0.5, 192.168.9.9")
+        with patch(
+            "netbox_idrac_inventory.idrac.discovery.get_plugin_config",
+            side_effect=lambda plugin, key: config[key],
+        ), patch(
+            "netbox_idrac_inventory.idrac.discovery.IdracClient",
+            return_value=self._fake_client("ALLOWTAG"),
+        ), patch("netbox_idrac_inventory.idrac.discovery.sync_server"):
+            result = discover_range(scan)
+
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["disallowed"], 1)
+        self.assertFalse(
+            DellServer.objects.filter(idrac_address="192.168.9.9").exists()
+        )

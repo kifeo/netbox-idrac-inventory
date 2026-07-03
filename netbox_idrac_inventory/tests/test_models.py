@@ -3,11 +3,9 @@
 # These tests must run inside a real NetBox Django environment where all
 # app dependencies (dcim, extras, etc.) are available.
 
-from django.core.exceptions import ValidationError
+from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
 from django.db import IntegrityError, transaction
 from django.test import TestCase
-
-from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
 
 from netbox_idrac_inventory.choices import ComponentTypeChoices, SyncStatusChoices
 from netbox_idrac_inventory.models import DellComponent, DellServer
@@ -73,7 +71,6 @@ class DellServerModelTest(TestCase):
             device=self.device,
             idrac_address="192.168.1.10",
         )
-        device2 = _make_device("dell-r740-02")
         # Reuse the same device — must violate OneToOne
         with self.assertRaises(IntegrityError):
             with transaction.atomic():

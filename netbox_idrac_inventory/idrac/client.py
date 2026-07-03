@@ -96,7 +96,7 @@ class IdracClient:
     # Context-manager support
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "IdracClient":
+    def __enter__(self) -> IdracClient:
         self._ensure_connected()
         return self
 
@@ -773,6 +773,57 @@ class IdracClient:
             if all(32 <= b < 127 for b in raw):
                 return raw.decode("ascii")
         return text
+
+    # ------------------------------------------------------------------
+    # Firmware inventory
+    # ------------------------------------------------------------------
+
+    def get_firmware_inventory(self) -> list[dict]:
+        """
+        Return the installed firmware entries from
+        ``/redfish/v1/UpdateService/FirmwareInventory``.
+
+        Keys: name, version, fqdd.
+
+        Dell encodes the component FQDD in the member Id after a double
+        underscore (e.g. ``Installed-25227-4.40.00.00__NIC.Slot.1-1-1`` ->
+        ``NIC.Slot.1-1-1``), which matches the component names reported
+        elsewhere, so the sync layer can enrich matching components. Only
+        ``Installed-*`` entries are returned (``Previous-``/``Available-``
+        versions are skipped).
+        """
+        results: list[dict] = []
+        try:
+            conn = self._get_system()._conn
+            members = (
+                conn.get(path="/redfish/v1/UpdateService/FirmwareInventory")
+                .json()
+                .get("Members", [])
+            )
+        except Exception as exc:
+            log.warning("get_firmware_inventory: unavailable: %s", exc)
+            return results
+
+        for ref in members:
+            path = ref.get("@odata.id") or ""
+            entry_id = path.rsplit("/", 1)[-1]
+            if not entry_id.startswith("Installed-"):
+                continue
+            try:
+                entry = conn.get(path=path).json()
+            except Exception as exc:
+                log.debug("get_firmware_inventory: %s failed: %s", path, exc)
+                continue
+            results.append(
+                {
+                    "name": entry.get("Name", ""),
+                    "version": (entry.get("Version") or "").strip(),
+                    "fqdd": (
+                        entry_id.split("__", 1)[1] if "__" in entry_id else ""
+                    ),
+                }
+            )
+        return results
 
     # ------------------------------------------------------------------
     # Power supplies

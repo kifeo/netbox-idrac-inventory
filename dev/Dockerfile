@@ -1,6 +1,6 @@
 # Dev image: official NetBox + this plugin installed (editable).
 # Build context is the repo root (see docker-compose.yml).
-ARG VERSION=v4.2
+ARG VERSION=v4.6
 FROM netboxcommunity/netbox:${VERSION}
 
 # Copy the plugin source and install it editable so a bind-mounted source

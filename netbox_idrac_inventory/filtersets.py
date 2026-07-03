@@ -2,7 +2,6 @@
 
 import django_filters
 from django.db.models import Q
-
 from netbox.filtersets import NetBoxModelFilterSet
 
 from .choices import ComponentTypeChoices, SyncStatusChoices

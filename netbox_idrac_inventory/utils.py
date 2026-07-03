@@ -3,17 +3,31 @@
 import base64
 import hashlib
 import ipaddress
+import socket
+
+
+class SecretDecryptionError(Exception):
+    """A stored secret exists but cannot be decrypted with the current keys."""
+
+
+def _derive_key(secret: str) -> bytes:
+    return base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
 
 
 def _fernet():
-    """Return a Fernet built from the NetBox SECRET_KEY (derived 32-byte key)."""
-    from cryptography.fernet import Fernet
+    """
+    Return a MultiFernet keyed on SECRET_KEY plus SECRET_KEY_FALLBACKS, so
+    secrets stored before a key rotation (done per Django's documented
+    procedure) remain readable. New secrets are encrypted with the primary key.
+    """
+    from cryptography.fernet import Fernet, MultiFernet
     from django.conf import settings
 
-    key = base64.urlsafe_b64encode(
-        hashlib.sha256(settings.SECRET_KEY.encode()).digest()
-    )
-    return Fernet(key)
+    secrets = [
+        settings.SECRET_KEY,
+        *getattr(settings, "SECRET_KEY_FALLBACKS", []),
+    ]
+    return MultiFernet([Fernet(_derive_key(secret)) for secret in secrets])
 
 
 def encrypt_secret(plaintext: str) -> str:
@@ -24,14 +38,25 @@ def encrypt_secret(plaintext: str) -> str:
 
 
 def decrypt_secret(token: str) -> str:
-    """Decrypt a token from :func:`encrypt_secret`; "" on empty/failure."""
+    """
+    Decrypt a token from :func:`encrypt_secret`; "" for "" (no secret).
+
+    Raises SecretDecryptionError when a stored secret cannot be decrypted
+    (e.g. SECRET_KEY rotated without SECRET_KEY_FALLBACKS). Failing loudly
+    here prevents a sync from silently falling back to the global default
+    password and locking out the iDRAC account with bad login attempts.
+    """
     if not token:
         return ""
     try:
         return _fernet().decrypt(token.encode()).decode()
-    except Exception:
-        # e.g. SECRET_KEY rotated since encryption — treat as no secret.
-        return ""
+    except Exception as exc:
+        raise SecretDecryptionError(
+            "The stored iDRAC password could not be decrypted (was "
+            "SECRET_KEY rotated without SECRET_KEY_FALLBACKS?). Re-enter "
+            "the password, or leave it blank to use the plugin default."
+        ) from exc
+
 
 # Safety cap so a careless CIDR can't expand into a huge scan.
 MAX_SCAN_TARGETS = 4096
@@ -80,11 +105,56 @@ def expand_targets(text: str, *, limit: int = MAX_SCAN_TARGETS) -> list[str]:
     return out
 
 
+def host_part(address: str) -> str:
+    """
+    Strip an optional port suffix from an address, IPv6-safely.
+
+    ``host:443`` -> ``host``; ``[2001:db8::1]:443`` -> ``2001:db8::1``; a
+    bare IPv6 literal (more than one colon, no brackets) is kept whole.
+    """
+    address = (address or "").strip()
+    if address.startswith("["):
+        return address[1:].split("]", 1)[0]
+    if address.count(":") == 1:
+        return address.split(":", 1)[0]
+    return address
+
+
+def check_address_allowed(address: str, networks: list) -> None:
+    """
+    Raise ValueError if *address* falls outside the *networks* prefixes.
+
+    No-op when *networks* is empty (the feature is opt-in). A hostname is
+    resolved and every returned IP must be inside an allowed prefix, so a
+    DNS name cannot be used to smuggle an out-of-policy target.
+    """
+    if not networks:
+        return
+    prefixes = [ipaddress.ip_network(str(n), strict=False) for n in networks]
+    host = host_part(address)
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            info = socket.getaddrinfo(host, None)
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot resolve '{host}' to check it against "
+                f"allowed_networks: {exc}"
+            ) from exc
+        addresses = {ipaddress.ip_address(item[4][0]) for item in info}
+    for ip in addresses:
+        if not any(ip in prefix for prefix in prefixes):
+            raise ValueError(
+                f"iDRAC address '{address}' ({ip}) is outside the "
+                "configured allowed_networks."
+            )
+
+
 def get_or_create_manufacturer(name: str):
     """Return the NetBox Manufacturer for *name*, creating it if needed."""
-    from django.utils.text import slugify
-
     from dcim.models import Manufacturer
+    from django.utils.text import slugify
 
     obj, _ = Manufacturer.objects.get_or_create(
         name=name, defaults={"slug": slugify(name)[:100]}
@@ -97,16 +167,14 @@ def default_device_name(address: str) -> str:
     Derive a default device name from an iDRAC address.
 
     For an FQDN, return only the host label (the part before the first dot),
-    e.g. ``idrac01.example.com`` -> ``idrac01``. For a bare IPv4
-    address, return it unchanged (splitting on dots would be meaningless).
+    e.g. ``idrac01.example.com`` -> ``idrac01``. A bare IP address (v4 or
+    v6) is returned unchanged; a port suffix is dropped first.
     """
-    address = (address or "").strip()
+    address = host_part(address)
     if not address:
         return ""
-    # Drop a port suffix if present (host:port).
-    address = address.split(":")[0]
-    parts = address.split(".")
-    if len(parts) == 4 and all(p.isdigit() for p in parts):
-        # Looks like an IPv4 literal — keep it whole.
-        return address
-    return parts[0]
+    try:
+        ipaddress.ip_address(address)
+        return address  # IP literal — keep it whole.
+    except ValueError:
+        return address.split(".")[0]

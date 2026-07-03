@@ -1,6 +1,6 @@
 from netbox.plugins import PluginConfig
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class DellInventoryConfig(PluginConfig):
@@ -11,6 +11,9 @@ class DellInventoryConfig(PluginConfig):
     author = "Thomas Le Gentil"
     base_url = "idrac-inventory"
     min_version = "4.1.0"
+    # NetBox compares the full version ("4.6" would reject 4.6.4), so use
+    # .99 to admit every 4.6.x patch release.
+    max_version = "4.6.99"
 
     # Global plugin settings. Per-device values (when set) take precedence.
     # Credentials are intentionally NOT stored in the database by default:
@@ -29,6 +32,11 @@ class DellInventoryConfig(PluginConfig):
         # Minutes between automatic syncs of every Dell server. 0 disables the
         # recurring system job (sync stays manual / on-demand only).
         "sync_interval_minutes": 0,
+        # Prefixes (e.g. ["10.0.0.0/8"]) that iDRAC addresses / scan targets
+        # must fall within. Empty = no restriction. Prevents a user with
+        # change permission from pointing a sync (and thus the iDRAC
+        # credentials) at an arbitrary host.
+        "allowed_networks": [],
     }
 
     def ready(self):

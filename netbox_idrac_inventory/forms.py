@@ -1,15 +1,13 @@
-"""Forms for the netbox_idrac_inventory UI (edit/filter/bulk-edit)."""
-
-from django import forms
-
-from netbox.forms import NetBoxModelForm, NetBoxModelFilterSetForm
-from utilities.forms.fields import (
-    DynamicModelChoiceField,
-    CommentField,
-)
-from utilities.forms.rendering import FieldSet
+"""Forms for the netbox_idrac_inventory UI (edit/filter)."""
 
 from dcim.models import Device, DeviceRole, Site
+from django import forms
+from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
+from utilities.forms.fields import (
+    CommentField,
+    DynamicModelChoiceField,
+)
+from utilities.forms.rendering import FieldSet
 
 from .choices import ComponentTypeChoices, SyncStatusChoices
 from .models import DellComponent, DellScanRange, DellServer
@@ -18,7 +16,6 @@ from .utils import (
     encrypt_secret,
     get_or_create_manufacturer,
 )
-
 
 # ---------------------------------------------------------------------------
 # DellServer forms
@@ -185,20 +182,6 @@ class DellServerFilterForm(NetBoxModelFilterSetForm):
     fieldsets = (
         FieldSet("q", "sync_status", "model_search", name="Search"),
     )
-
-
-class DellServerBulkEditForm(forms.Form):
-    """Bulk-edit form for DellServer (minimal — only editable non-identity fields)."""
-
-    pk = forms.ModelMultipleChoiceField(
-        queryset=DellServer.objects.all(),
-        widget=forms.MultipleHiddenInput,
-    )
-    idrac_username = forms.CharField(
-        required=False,
-        label="iDRAC username",
-    )
-    comments = CommentField()
 
 
 # ---------------------------------------------------------------------------

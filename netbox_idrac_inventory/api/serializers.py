@@ -1,26 +1,45 @@
-# REST API serializers for netbox_idrac_inventory.
-#
-# Conventions confirmed from NetBox 4.x plugin docs
-# (https://netboxlabs.com/docs/netbox/en/stable/plugins/development/rest-api/):
-#   - Subclass NetBoxModelSerializer for all plugin model serializers.
-#   - Nested (brief) representation is controlled by Meta.brief_fields.
-#   - Related objects use their own serializer with nested=True for brief inline
-#     representation; this is the standard NetBox 4.x pattern (not extra_kwargs).
-#   - HyperlinkedIdentityField view_name for plugin objects follows the pattern
-#     "plugins-api:<app_label>-api:<model>-detail".
+"""REST API serializers for netbox_idrac_inventory.
 
-from rest_framework import serializers
-from netbox.api.serializers import NetBoxModelSerializer
+The per-device/per-range ``idrac_password`` is write-only: it is encrypted
+before it reaches the model and is never included in a response. Sending a
+blank/absent password keeps the stored value (it cannot be cleared via the
+API; use the UI form for that).
+"""
 
-# Lazy import to avoid circular issues at module load time; these are resolved
-# once the Django app registry is ready.
 from dcim.api.serializers import DeviceSerializer
+from netbox.api.serializers import NetBoxModelSerializer
+from rest_framework import serializers
 
 from netbox_idrac_inventory.models import (
     DellComponent,
     DellScanRange,
     DellServer,
 )
+from netbox_idrac_inventory.utils import encrypt_secret
+
+
+class EncryptedPasswordSerializerMixin(serializers.Serializer):
+    """Adds a write-only ``idrac_password`` field, encrypted at rest."""
+
+    idrac_password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        style={"input_type": "password"},
+        help_text=(
+            "Per-object iDRAC password, stored encrypted; never returned. "
+            "Blank or absent keeps the current value."
+        ),
+    )
+
+    def validate(self, data):
+        # Strip/encrypt before super(): NetBox's ValidatedModelSerializer
+        # copies attrs onto the instance during validation, so a blank
+        # password left in *data* would overwrite the stored secret.
+        password = data.pop("idrac_password", None)
+        if password:
+            data["idrac_password"] = encrypt_secret(password)
+        return super().validate(data)
 
 
 class DellComponentSerializer(NetBoxModelSerializer):
@@ -61,27 +80,22 @@ class DellComponentSerializer(NetBoxModelSerializer):
         )
 
 
-class DellServerSerializer(NetBoxModelSerializer):
+class DellServerSerializer(EncryptedPasswordSerializerMixin, NetBoxModelSerializer):
     """Serializer for a Dell server record linked to a NetBox Device.
 
     Includes:
-      - device: nested brief DeviceSerializer (nested=True is the NetBox 4.x
-        convention for inline related-object representations).
-      - component_count: read-only count sourced from the reverse relation.
+      - device: nested brief DeviceSerializer.
+      - component_count: read-only; uses the viewset's annotation when
+        present and falls back to a count query (e.g. right after create).
     """
 
     url = serializers.HyperlinkedIdentityField(
         view_name="plugins-api:netbox_idrac_inventory-api:dellserver-detail",
     )
 
-    # nested=True requests the brief (brief_fields) representation of the device.
-    # This is the documented NetBox 4.x pattern for related-object nesting.
     device = DeviceSerializer(nested=True)
 
-    component_count = serializers.IntegerField(
-        source="components.count",
-        read_only=True,
-    )
+    component_count = serializers.SerializerMethodField()
 
     class Meta:
         model = DellServer
@@ -92,6 +106,7 @@ class DellServerSerializer(NetBoxModelSerializer):
             "device",
             "idrac_address",
             "idrac_username",
+            "idrac_password",
             "service_tag",
             "model",
             "bios_version",
@@ -116,8 +131,12 @@ class DellServerSerializer(NetBoxModelSerializer):
             "sync_status",
         )
 
+    def get_component_count(self, obj) -> int:
+        count = getattr(obj, "component_count", None)
+        return obj.components.count() if count is None else count
 
-class DellScanRangeSerializer(NetBoxModelSerializer):
+
+class DellScanRangeSerializer(EncryptedPasswordSerializerMixin, NetBoxModelSerializer):
     """Serializer for a Dell discovery scan range."""
 
     url = serializers.HyperlinkedIdentityField(
@@ -133,6 +152,7 @@ class DellScanRangeSerializer(NetBoxModelSerializer):
             "name",
             "targets",
             "idrac_username",
+            "idrac_password",
             "site",
             "role",
             "enabled",

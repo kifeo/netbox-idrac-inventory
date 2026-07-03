@@ -9,9 +9,7 @@
 #     and mixes in ChangelogMixin, CustomFieldsMixin, JournalEntriesMixin, TagsMixin.
 #   - NetBoxObjectType enforces object-level permissions on the queryset.
 
-import strawberry
 import strawberry_django
-
 from netbox.graphql.types import NetBoxObjectType
 
 from netbox_idrac_inventory import models

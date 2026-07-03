@@ -12,12 +12,15 @@ import logging
 import os
 
 from django.utils import timezone
-
 from netbox.plugins import get_plugin_config
 
 from netbox_idrac_inventory.idrac.client import IdracClient
 from netbox_idrac_inventory.idrac.sync import PLUGIN_NAME, sync_server
-from netbox_idrac_inventory.utils import expand_targets
+from netbox_idrac_inventory.utils import (
+    SecretDecryptionError,
+    check_address_allowed,
+    expand_targets,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +50,18 @@ def discover_range(scan_range, *, logger=None) -> dict:
     )
 
     _log = logger or log
-    username, password = _credentials(scan_range)
+
+    if not scan_range.enabled:
+        message = "Scan range is disabled; nothing scanned."
+        _record(scan_range, message)
+        _log.info("%s — %s", scan_range, message)
+        return {"message": message}
+
+    try:
+        username, password = _credentials(scan_range)
+    except SecretDecryptionError as exc:
+        _record(scan_range, str(exc))
+        raise
     verify_ssl = get_plugin_config(PLUGIN_NAME, "idrac_verify_ssl")
     timeout = int(get_plugin_config(PLUGIN_NAME, "idrac_timeout"))
     manage_oob = get_plugin_config(PLUGIN_NAME, "manage_idrac_interface")
@@ -57,6 +71,20 @@ def discover_range(scan_range, *, logger=None) -> dict:
     except ValueError as exc:
         _record(scan_range, f"Invalid targets: {exc}")
         raise
+
+    # Drop targets outside allowed_networks (opt-in; see plugin settings).
+    networks = get_plugin_config(PLUGIN_NAME, "allowed_networks") or []
+    disallowed = 0
+    if networks:
+        permitted = []
+        for target in targets:
+            try:
+                check_address_allowed(target, networks)
+                permitted.append(target)
+            except ValueError as exc:
+                disallowed += 1
+                _log.warning("Discovery: %s", exc)
+        targets = permitted
 
     created = linked = synced = unreachable = failed = skipped = 0
 
@@ -127,6 +155,8 @@ def discover_range(scan_range, *, logger=None) -> dict:
         f"{synced} synced, {skipped} already managed, {unreachable} "
         f"unreachable, {failed} failed."
     )
+    if disallowed:
+        message += f" {disallowed} outside allowed_networks."
     _record(scan_range, message)
     _log.info("%s — %s", scan_range, message)
     return {
@@ -136,6 +166,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
         "skipped": skipped,
         "unreachable": unreachable,
         "failed": failed,
+        "disallowed": disallowed,
         "message": message,
     }
 

@@ -14,7 +14,6 @@
 #
 # Both DellServerType and DellComponentType are registered here.
 
-from typing import List, Optional
 
 import strawberry
 import strawberry_django
@@ -29,7 +28,7 @@ class DellInventoryQuery:
     # ------------------------------------------------------------------ servers
 
     @strawberry.field
-    def dell_server(self, id: int) -> Optional[DellServerType]:
+    def dell_server(self, id: int) -> DellServerType | None:
         """Retrieve a single DellServer by primary key."""
         from netbox_idrac_inventory.models import DellServer
 
@@ -38,12 +37,12 @@ class DellInventoryQuery:
         except DellServer.DoesNotExist:
             return None
 
-    dell_server_list: List[DellServerType] = strawberry_django.field()
+    dell_server_list: list[DellServerType] = strawberry_django.field()
 
     # --------------------------------------------------------------- components
 
     @strawberry.field
-    def dell_component(self, id: int) -> Optional[DellComponentType]:
+    def dell_component(self, id: int) -> DellComponentType | None:
         """Retrieve a single DellComponent by primary key."""
         from netbox_idrac_inventory.models import DellComponent
 
@@ -52,12 +51,12 @@ class DellInventoryQuery:
         except DellComponent.DoesNotExist:
             return None
 
-    dell_component_list: List[DellComponentType] = strawberry_django.field()
+    dell_component_list: list[DellComponentType] = strawberry_django.field()
 
     # ------------------------------------------------------------- scan ranges
 
     @strawberry.field
-    def dell_scan_range(self, id: int) -> Optional[DellScanRangeType]:
+    def dell_scan_range(self, id: int) -> DellScanRangeType | None:
         """Retrieve a single DellScanRange by primary key."""
         from netbox_idrac_inventory.models import DellScanRange
 
@@ -66,7 +65,7 @@ class DellInventoryQuery:
         except DellScanRange.DoesNotExist:
             return None
 
-    dell_scan_range_list: List[DellScanRangeType] = strawberry_django.field()
+    dell_scan_range_list: list[DellScanRangeType] = strawberry_django.field()
 
 
 # NetBox reads this list and merges each class into the root Query type.

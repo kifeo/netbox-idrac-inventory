@@ -29,10 +29,15 @@ interface via the Redfish API.
   port (remote switch + remote port) is stored in the `lldp_remote_chassis`
   and `lldp_remote_port` custom fields on the interface. These custom fields
   are created automatically on first migrate.
-- **Sync-on-demand** — trigger a sync from the NetBox UI or via the REST API
+- **Firmware inventory** — the Redfish `UpdateService/FirmwareInventory` is
+  read on each sync and the installed version is written to matching
+  components (by FQDD), covering parts whose own resource omits a version.
+- **Sync-on-demand** — trigger a sync from the NetBox UI (single server or a
+  bulk *Sync from iDRAC* action on the server list) or via the REST API
   (`POST .../servers/<id>/sync/`); sync runs as a background job.
 - **Scheduled sync** — set `sync_interval_minutes` > 0 to register a recurring
-  system job that re-syncs every Dell server automatically.
+  system job that fans out one sync job per Dell server, so the RQ workers
+  run them in parallel and one unreachable iDRAC never stalls the fleet.
 - **Network discovery** — define a **Scan Range** (CIDR / range / hosts); a
   discovery job probes each iDRAC and imports it, attaching to an existing
   device with the same service tag when one exists (no duplicate) or creating
@@ -52,7 +57,11 @@ interface via the Redfish API.
 
 | Plugin version | NetBox version |
 |----------------|---------------|
+| 0.2.x          | 4.1 – 4.6     |
 | 0.1.x          | 4.1 or later  |
+
+NetBox 4.6+ requires `API_TOKEN_PEPPERS` in your NetBox configuration (a
+core NetBox requirement, not a plugin one).
 
 Requires Python 3.10+.
 
@@ -95,6 +104,10 @@ PLUGINS_CONFIG = {
         # sync stays manual). Read at worker startup — restart the RQ worker
         # after changing it.
         "sync_interval_minutes": 0,
+        # Optional list of prefixes that iDRAC addresses and scan targets
+        # must fall within, e.g. ["10.116.0.0/16"]. Empty = no restriction.
+        # Strongly recommended: see "Credentials and security" below.
+        "allowed_networks": [],
     }
 }
 ```
@@ -143,10 +156,13 @@ used.
   ```json
   {
     "job_id": 123,
-    "job_url": "https://netbox.example.com/api/extras/jobs/123/",
+    "job_url": "https://netbox.example.com/api/core/jobs/123/",
     "message": "Sync job enqueued for my-server-01 (SVC00042)."
   }
   ```
+
+  Triggering a sync requires the *change* permission on Dell servers (on
+  top of NetBox's standard POST-to-add API permission mapping).
 
 ### Discover servers from a range
 
@@ -173,6 +189,10 @@ Base path: `/api/plugins/idrac-inventory/`
 | GET    | `/components/<id>/`               | Retrieve a component        |
 | GET/POST | `/scan-ranges/`                 | List / create scan ranges   |
 | POST   | `/scan-ranges/<id>/run/`          | Enqueue a discovery job     |
+
+The per-device / per-range `idrac_password` can be **set** via POST/PATCH; it
+is write-only (encrypted before storage, never present in any response) and a
+blank or absent value keeps the stored one.
 
 Full OpenAPI schema is available at `/api/schema/` in your NetBox instance.
 
@@ -209,13 +229,33 @@ query {
   3. `PLUGINS_CONFIG["netbox_idrac_inventory"]["idrac_default_password"]`.
 - **Per-device password** — when servers don't share one password, set it on
   the DellServer (or scan range). It is **encrypted at rest** with a key
-  derived from NetBox's `SECRET_KEY` (Fernet), is write-only in the form, and
-  is never returned by the REST or GraphQL API. Rotating `SECRET_KEY`
-  invalidates stored passwords (re-enter them). If you only have one shared
-  password, leave these blank and use the global default above.
+  derived from NetBox's `SECRET_KEY` (Fernet), is write-only in the form and
+  the API, and is never returned by the REST or GraphQL API. If you only have
+  one shared password, leave these blank and use the global default above.
+- **`SECRET_KEY` rotation** — rotate per Django's documented procedure (put
+  the old key in `SECRET_KEY_FALLBACKS`) and stored passwords keep working.
+  If a stored password can no longer be decrypted, the sync **fails with a
+  clear message** instead of silently retrying with the global default (which
+  could trip the iDRAC's account lockout); re-enter the password to recover.
 - The per-device `idrac_username` overrides `idrac_default_username` likewise.
 - In production, set `idrac_verify_ssl: true` and provide a trusted CA bundle
   so TLS certificates are validated.
+
+### Restricting where syncs may connect
+
+Anyone with *change* permission on Dell servers or scan ranges chooses which
+address the plugin connects to — and the sync presents the configured iDRAC
+credentials to that address. A malicious or compromised account could point a
+record at a host it controls and capture the global default password. To
+contain this:
+
+- set `allowed_networks` to the management prefixes your iDRACs live in;
+  syncs and scans to any address (or DNS name resolving) outside them are
+  refused;
+- grant `change_dellserver` / `change_dellscanrange` sparingly, like any
+  credential-bearing automation;
+- enable `idrac_verify_ssl` so credentials are never sent over unverified
+  TLS.
 
 ---
 
@@ -275,7 +315,10 @@ netbox_idrac_inventory/
     test_models.py     # Model unit tests
     test_idrac.py      # Sync engine + network/LLDP tests (fake client)
     test_api.py        # REST API tests (NetBox APIViewTestCases)
-    test_forms.py      # Device-creating form + name helper
+    test_forms.py      # Device-creating form + password handling
+    test_discovery.py  # Target expansion + discovery engine
+    test_utils.py      # Address helpers + encryption fail-closed
+    test_views.py      # Bulk sync action
   __init__.py          # PluginConfig (settings) + post_migrate hook
   choices.py           # SyncStatusChoices, ComponentTypeChoices
   models.py            # DellServer, DellComponent, DellScanRange

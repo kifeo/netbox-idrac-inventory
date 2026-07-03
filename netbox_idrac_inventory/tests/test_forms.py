@@ -1,7 +1,6 @@
 # Tests for the device-creating DellServerForm and the name helper.
-from django.test import TestCase
-
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+from django.test import TestCase
 
 from netbox_idrac_inventory.forms import DellServerForm
 from netbox_idrac_inventory.utils import default_device_name
@@ -126,3 +125,25 @@ class EncryptedPasswordTest(TestCase):
         }, instance=DellServer.objects.get(pk=server.pk))
         self.assertTrue(form2.is_valid(), form2.errors)
         self.assertEqual(form2.save().idrac_password, stored)
+
+    def test_undecryptable_password_fails_credential_resolution(self):
+        """A stored password that no longer decrypts must raise, not fall
+        back to the global default (which could lock out the iDRAC)."""
+        from netbox_idrac_inventory.idrac.sync import resolve_credentials
+        from netbox_idrac_inventory.models import DellServer
+        from netbox_idrac_inventory.utils import SecretDecryptionError
+
+        device_form = DellServerForm(data={
+            "idrac_address": "rot-host.example.com",
+            "site": self.site.pk,
+            "role": self.role.pk,
+        })
+        self.assertTrue(device_form.is_valid(), device_form.errors)
+        server = device_form.save()
+        DellServer.objects.filter(pk=server.pk).update(
+            idrac_password="corrupted-token"
+        )
+        server.refresh_from_db()
+
+        with self.assertRaises(SecretDecryptionError):
+            resolve_credentials(server)

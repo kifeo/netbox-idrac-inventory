@@ -7,9 +7,11 @@ command, or unit tests (pass a ``client`` fixture to bypass the real iDRAC).
 
 Password security note
 ----------------------
-The iDRAC password is resolved at sync time from the plugin config
-(``idrac_default_password``) or the ``IDRAC_DEFAULT_PASSWORD`` environment
-variable. It is never stored in the database.
+The iDRAC password is resolved at sync time: the per-device password
+(encrypted at rest) when set, else the ``IDRAC_DEFAULT_PASSWORD``
+environment variable, else the plugin config. It is never stored in the
+database in plaintext, and a per-device password that can no longer be
+decrypted fails the sync instead of silently falling back to the default.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 from django.utils import timezone
-
 from netbox.plugins import get_plugin_config
 
 from netbox_idrac_inventory.choices import (
@@ -29,7 +30,10 @@ from netbox_idrac_inventory.choices import (
     SyncStatusChoices,
 )
 from netbox_idrac_inventory.idrac.client import IdracClient
-from netbox_idrac_inventory.utils import get_or_create_manufacturer
+from netbox_idrac_inventory.utils import (
+    check_address_allowed,
+    get_or_create_manufacturer,
+)
 
 if TYPE_CHECKING:
     from netbox_idrac_inventory.models import DellServer
@@ -57,7 +61,7 @@ def _config(key: str):
 # ---------------------------------------------------------------------------
 
 
-def resolve_credentials(server: "DellServer") -> tuple[str, str]:
+def resolve_credentials(server: DellServer) -> tuple[str, str]:
     """
     Return the ``(username, password)`` to use for *server*.
 
@@ -125,6 +129,20 @@ def _build_component_rows(client: IdracClient) -> list[dict]:
             row["health"] = HealthChoices.from_redfish(item.get("health"))
             row["data"] = {key: item.get(key) for key in data_keys}
             rows.append(row)
+
+    # UpdateService/FirmwareInventory is authoritative for firmware versions
+    # and covers components whose own resource omits one (PSUs, backplanes…).
+    # Dell keys the entries by FQDD, which is what component names are.
+    firmware = {
+        entry["fqdd"]: entry["version"]
+        for entry in _safe_call(client.get_firmware_inventory, "firmware inventory")
+        if entry.get("fqdd") and entry.get("version")
+    }
+    if firmware:
+        for row in rows:
+            version = firmware.get(row["name"])
+            if version:
+                row["firmware"] = version
     return rows
 
 
@@ -187,9 +205,8 @@ def _set_device_type(device, model: str, _log) -> None:
     shared Dell DeviceType on demand. Replaces the "Unknown" placeholder set
     when the device was created on add.
     """
-    from django.utils.text import slugify
-
     from dcim.models import DeviceType
+    from django.utils.text import slugify
 
     dtype, _ = DeviceType.objects.get_or_create(
         manufacturer=get_or_create_manufacturer("Dell"),
@@ -267,14 +284,19 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
 
     Returns ``(modules_synced, interfaces_synced)``.
     """
-    from django.contrib.contenttypes.models import ContentType
-
     from dcim.choices import ModuleStatusChoices
     from dcim.models import Interface, Module, ModuleBay, ModuleType
+    from django.contrib.contenttypes.models import ContentType
 
     device = server.device
     iface_ct = ContentType.objects.get_for_model(Interface)
     adapters = _safe_call(client.get_network_adapters, "network adapters")
+
+    # Nothing reported at all is more likely a transient getter failure than
+    # a server with zero NICs: keep the existing modules/interfaces rather
+    # than wiping them (mirrors the component-reconciliation guard).
+    if not adapters:
+        return 0, 0
 
     modules_synced = interfaces_synced = 0
     desired_bays: set[str] = set()
@@ -321,9 +343,20 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
             interfaces_synced += 1
 
         # Drop interfaces on this module the adapter no longer reports.
-        Interface.objects.filter(module=module).exclude(
-            name__in=desired_ports
-        ).delete()
+        # Deleting an interface also removes its cable and IP assignments,
+        # so skip when the adapter reported no ports at all (likely a
+        # transient failure) and log what is removed.
+        if desired_ports:
+            stale_ifaces = Interface.objects.filter(module=module).exclude(
+                name__in=desired_ports
+            )
+            for iface in stale_ifaces:
+                _log.warning(
+                    "Removing interface '%s' on %s: no longer reported by "
+                    "iDRAC (cable/IP assignments are removed with it).",
+                    iface, device,
+                )
+                iface.delete()
 
     # Drop plugin-managed bays (with their modules/interfaces) for adapters
     # that are gone.
@@ -331,6 +364,11 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
         device=device, name__startswith=_NIC_BAY_PREFIX
     ).exclude(name__in=desired_bays)
     for bay in stale_bays:
+        _log.warning(
+            "Removing module bay '%s' on %s: adapter no longer reported "
+            "by iDRAC.",
+            bay.name, device,
+        )
         Module.objects.filter(module_bay=bay).delete()
         bay.delete()
 
@@ -342,10 +380,9 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
     Model the iDRAC itself: a mgmt-only ``iDRAC`` Interface on the device with
     its MAC and IPv4 address, set as the device's out-of-band (``oob_ip``).
     """
-    from django.contrib.contenttypes.models import ContentType
-
     from dcim.choices import InterfaceTypeChoices
     from dcim.models import Interface, MACAddress
+    from django.contrib.contenttypes.models import ContentType
     from ipam.models import IPAddress
 
     address = net.get("ipv4")
@@ -470,7 +507,7 @@ def _mark_failed(server, exc: Exception, _log) -> None:
 
 
 def sync_server(
-    server: "DellServer",
+    server: DellServer,
     *,
     client: IdracClient | None = None,
     logger=None,
@@ -497,6 +534,9 @@ def sync_server(
     own_client = client is None
     try:
         if own_client:
+            check_address_allowed(
+                server.idrac_address, _config("allowed_networks") or []
+            )
             username, password = resolve_credentials(server)
             client = IdracClient(
                 server.idrac_address,

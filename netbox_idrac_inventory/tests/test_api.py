@@ -22,15 +22,15 @@
 #   client.  Subclasses only need to populate DB fixtures in setUp() and call
 #   super().setUp().
 
-from django.test import TestCase
+from unittest.mock import MagicMock, patch
 
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+from django.test import TestCase
+from django.urls import reverse
+from utilities.testing import APITestCase, APIViewTestCases
 
-from utilities.testing import APIViewTestCases
-
-from netbox_idrac_inventory.choices import ComponentTypeChoices, SyncStatusChoices
+from netbox_idrac_inventory.choices import ComponentTypeChoices
 from netbox_idrac_inventory.models import DellComponent, DellServer
-
 
 # ---------------------------------------------------------------------------
 # Shared fixture helpers
@@ -192,3 +192,102 @@ class DellComponentAPITestCase(
                 "manufacturer": "Broadcom",
             },
         ]
+
+
+# ---------------------------------------------------------------------------
+# Password handling and custom actions
+# ---------------------------------------------------------------------------
+
+class DellServerPasswordAPITestCase(APITestCase):
+    """The per-device password is write-only and encrypted at rest."""
+
+    def test_password_is_encrypted_and_never_returned(self):
+        from netbox_idrac_inventory.utils import decrypt_secret
+
+        self.add_permissions("netbox_idrac_inventory.add_dellserver")
+        device = _make_device("pw-api-01")
+        url = reverse(
+            "plugins-api:netbox_idrac_inventory-api:dellserver-list"
+        )
+        response = self.client.post(
+            url,
+            {
+                "device": device.pk,
+                "idrac_address": "10.99.0.1",
+                "idrac_password": "apisecret",
+            },
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertNotIn("idrac_password", response.data)
+
+        server = DellServer.objects.get(idrac_address="10.99.0.1")
+        self.assertTrue(server.idrac_password)
+        self.assertNotIn("apisecret", server.idrac_password)
+        self.assertEqual(decrypt_secret(server.idrac_password), "apisecret")
+
+    def test_blank_password_keeps_stored_value(self):
+        from netbox_idrac_inventory.utils import encrypt_secret
+
+        self.add_permissions("netbox_idrac_inventory.change_dellserver")
+        device = _make_device("pw-api-02")
+        server = DellServer.objects.create(
+            device=device,
+            idrac_address="10.99.0.2",
+            idrac_password=encrypt_secret("keepme"),
+        )
+        stored = server.idrac_password
+
+        url = reverse(
+            "plugins-api:netbox_idrac_inventory-api:dellserver-detail",
+            kwargs={"pk": server.pk},
+        )
+        response = self.client.patch(
+            url,
+            {"idrac_password": "", "comments": "patched"},
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        server.refresh_from_db()
+        self.assertEqual(server.idrac_password, stored)
+
+
+class DellServerSyncActionAPITestCase(APITestCase):
+    """The sync action needs change permission and returns a core job URL."""
+
+    def _post_sync(self, server):
+        url = reverse(
+            "plugins-api:netbox_idrac_inventory-api:dellserver-sync",
+            kwargs={"pk": server.pk},
+        )
+        return self.client.post(url, {}, format="json", **self.header)
+
+    def test_sync_rejected_without_change_permission(self):
+        # add satisfies NetBox's built-in POST mapping, but the action
+        # itself must still require change.
+        self.add_permissions("netbox_idrac_inventory.add_dellserver")
+        server = DellServer.objects.create(
+            device=_make_device("sync-api-01"), idrac_address="10.99.1.1"
+        )
+        response = self._post_sync(server)
+        self.assertEqual(response.status_code, 403)
+
+    def test_sync_enqueues_job(self):
+        self.add_permissions(
+            "netbox_idrac_inventory.add_dellserver",
+            "netbox_idrac_inventory.change_dellserver",
+        )
+        server = DellServer.objects.create(
+            device=_make_device("sync-api-02"), idrac_address="10.99.1.2"
+        )
+        with patch(
+            "netbox_idrac_inventory.api.views.enqueue_sync",
+            return_value=MagicMock(pk=123),
+        ) as mock_enqueue:
+            response = self._post_sync(server)
+        self.assertEqual(response.status_code, 202, response.data)
+        mock_enqueue.assert_called_once()
+        self.assertEqual(response.data["job_id"], 123)
+        self.assertIn("/api/core/jobs/123/", response.data["job_url"])

@@ -16,3 +16,6 @@ dev/.env
 .claude/
 CLAUDE.md
 *.code-workspace
+
+# OneDrive sync-conflict copies (repo lives inside a OneDrive folder)
+*-tlegentil-*

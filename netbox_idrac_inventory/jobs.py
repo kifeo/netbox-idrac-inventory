@@ -1,18 +1,10 @@
 """
-NetBox background job for synchronising a DellServer from iDRAC.
+NetBox background jobs: per-server iDRAC sync, the recurring fleet sync,
+and scan-range discovery.
 
-Confirmed NetBox 4.x API details (verified against a running NetBox 4.2,
-2026-06):
-  - ``JobRunner`` lives at ``netbox.jobs.JobRunner``.
-  - Subclass must implement ``run(self, *args, **kwargs)``.
-  - The runner only exposes ``self.job``; there is no ``self.logger``.
-    Use the standard ``logging`` module for diagnostics.
-  - The associated model instance is ``self.job.object`` (set via the
-    ``instance=`` kwarg at enqueue time). The model must include
-    ``JobsMixin`` for the Job framework to accept the association.
-  - Enqueue a job:  ``MyJob.enqueue(instance=<obj>, user=<user>)``
-  - Jobs do not return a value; exceptions propagate and mark the job
-    as "errored" automatically.
+Jobs are enqueued with ``instance=<obj>`` so ``self.job.object`` is the
+associated model (which must include ``JobsMixin``). Exceptions propagate
+and mark the job as errored.
 """
 
 from __future__ import annotations
@@ -20,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from netbox.jobs import JobRunner, system_job  # confirmed import path
+from netbox.jobs import JobRunner, system_job
 from netbox.plugins import get_plugin_config
 
 from netbox_idrac_inventory.idrac.sync import PLUGIN_NAME, sync_server
@@ -63,7 +55,7 @@ class DellSyncJob(JobRunner):
         ``sync_status=FAILED`` before re-raising, so the database state is
         always consistent regardless of the job's outcome.
         """
-        server: "DellServer" = self.job.object
+        server: DellServer = self.job.object
 
         logger.info("DellSyncJob starting for server %s", server)
 
@@ -87,7 +79,7 @@ class DellSyncJob(JobRunner):
 # ---------------------------------------------------------------------------
 
 
-def enqueue_sync(server: "DellServer", user: "User | None" = None):
+def enqueue_sync(server: DellServer, user: User | None = None):
     """
     Enqueue a ``DellSyncJob`` for *server* and return the created ``Job``.
 
@@ -122,11 +114,13 @@ def enqueue_sync(server: "DellServer", user: "User | None" = None):
 
 class DellSyncAllJob(JobRunner):
     """
-    Recurring system job that syncs every DellServer.
+    Recurring system job that enqueues a ``DellSyncJob`` for every DellServer.
 
     Registered as a NetBox system job only when ``sync_interval_minutes`` > 0
-    (see below); otherwise syncing stays manual / on-demand. One server's
-    failure is logged and does not stop the others.
+    (see below); otherwise syncing stays manual / on-demand. Fanning out to
+    per-server jobs gives each server its own job record (status/history)
+    and lets the RQ workers run them in parallel, so one hung iDRAC cannot
+    stall the whole fleet behind a serial loop.
     """
 
     class Meta:
@@ -135,15 +129,11 @@ class DellSyncAllJob(JobRunner):
     def run(self, *args, **kwargs) -> None:
         from netbox_idrac_inventory.models import DellServer
 
-        ok = failed = 0
-        for server in DellServer.objects.all():
-            try:
-                sync_server(server)
-                ok += 1
-            except Exception as exc:
-                failed += 1
-                logger.warning("Scheduled sync failed for %s: %s", server, exc)
-        logger.info("Scheduled Dell sync complete: %d ok, %d failed.", ok, failed)
+        enqueued = 0
+        for server in DellServer.objects.iterator():
+            DellSyncJob.enqueue(instance=server)
+            enqueued += 1
+        logger.info("Scheduled Dell sync: enqueued %d sync jobs.", enqueued)
 
 
 # Register the recurring system job only when an interval is configured. The
@@ -170,6 +160,6 @@ class DellDiscoveryJob(JobRunner):
         discover_range(self.job.object, logger=logger)
 
 
-def enqueue_discovery(scan_range: "DellScanRange", user: "User | None" = None):
+def enqueue_discovery(scan_range: DellScanRange, user: User | None = None):
     """Enqueue a discovery job for *scan_range* and return the Job."""
     return DellDiscoveryJob.enqueue(instance=scan_range, user=user)

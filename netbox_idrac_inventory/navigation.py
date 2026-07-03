@@ -11,8 +11,8 @@ NetBox 4.x navigation API (confirmed from docs):
   - PluginMenuButton(link, title, icon_class, color=None, permissions=[])
 """
 
-from netbox.plugins import PluginMenu, PluginMenuButton, PluginMenuItem
 from netbox.choices import ButtonColorChoices
+from netbox.plugins import PluginMenu, PluginMenuButton, PluginMenuItem
 
 menu = PluginMenu(
     label="iDRAC Inventory",

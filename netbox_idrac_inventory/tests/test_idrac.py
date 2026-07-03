@@ -14,13 +14,11 @@
 import logging
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
-
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+from django.test import TestCase
 
 from netbox_idrac_inventory.choices import ComponentTypeChoices, SyncStatusChoices
 from netbox_idrac_inventory.models import DellComponent, DellServer
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,6 +43,7 @@ def _make_fake_client(
     drives=None,
     power_supplies=None,
     network_adapters=None,
+    firmware=None,
 ):
     """Build a fake IdracClient with canned responses for all methods."""
 
@@ -57,6 +56,10 @@ def _make_fake_client(
     )
     # No iDRAC management interface by default (empty dict -> skipped).
     client.get_idrac_network.return_value = {}
+    # No UpdateService firmware inventory by default.
+    client.get_firmware_inventory.return_value = (
+        firmware if firmware is not None else []
+    )
 
     # The real IdracClient returns NORMALIZED snake_case dicts (not raw
     # Redfish JSON), so the fakes must match that contract — see
@@ -157,7 +160,7 @@ class SyncServerFieldsTest(TestCase):
 
         server = _make_server()
         fake = _make_fake_client()
-        result = sync_server(server, client=fake, logger=logging.getLogger("test"))
+        sync_server(server, client=fake, logger=logging.getLogger("test"))
 
         server.refresh_from_db()
         self.assertEqual(server.service_tag, "ABCDE12")
@@ -286,6 +289,7 @@ class SyncServerDeviceTypeTest(TestCase):
 
     def test_device_type_set_from_model(self):
         from dcim.models import DeviceType, Manufacturer
+
         from netbox_idrac_inventory.idrac.sync import sync_server
 
         server = _make_server(name="dtype-01")
@@ -361,16 +365,75 @@ class SyncIdracManagementTest(TestCase):
 
 
 class DellSyncAllJobTest(TestCase):
-    """The recurring system job syncs every DellServer."""
+    """The recurring system job fans out one DellSyncJob per DellServer."""
 
-    def test_runs_for_each_server(self):
+    def test_enqueues_a_job_per_server(self):
         from netbox_idrac_inventory.jobs import DellSyncAllJob
 
-        _make_server(name="all-1", idrac="10.0.9.1")
-        _make_server(name="all-2", idrac="10.0.9.2")
-        with patch("netbox_idrac_inventory.jobs.sync_server") as mock_sync:
+        server_a = _make_server(name="all-1", idrac="10.0.9.1")
+        server_b = _make_server(name="all-2", idrac="10.0.9.2")
+        with patch(
+            "netbox_idrac_inventory.jobs.DellSyncJob.enqueue"
+        ) as mock_enqueue:
             DellSyncAllJob(MagicMock()).run()
-        self.assertEqual(mock_sync.call_count, 2)
+        self.assertEqual(mock_enqueue.call_count, 2)
+        enqueued = {c.kwargs["instance"] for c in mock_enqueue.call_args_list}
+        self.assertEqual(enqueued, {server_a, server_b})
+
+
+class SyncFirmwareInventoryTest(TestCase):
+    """UpdateService firmware versions enrich matching components by FQDD."""
+
+    def test_component_firmware_enriched(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="fw-01")
+        fake = _make_fake_client(firmware=[
+            # Matches the default storage controller fixture by FQDD.
+            {
+                "name": "PERC H730P Mini",
+                "version": "25.5.9.0001",
+                "fqdd": "RAID.Integrated.1-1",
+            },
+            # No component with this name: must be ignored, not crash.
+            {"name": "System CPLD", "version": "1.0.6", "fqdd": "CPLD.Embedded.1"},
+        ])
+        sync_server(server, client=fake)
+
+        ctrl = server.components.get(
+            component_type=ComponentTypeChoices.TYPE_CONTROLLER
+        )
+        # FirmwareInventory is authoritative: it overrides the version the
+        # controller resource itself reported (25.5.0.0018 in the fixture).
+        self.assertEqual(ctrl.firmware, "25.5.9.0001")
+
+
+class SyncAllowedNetworksTest(TestCase):
+    """allowed_networks blocks a sync to an out-of-policy iDRAC address."""
+
+    def test_out_of_range_address_fails_sync(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="allow-01", idrac="192.168.77.1")
+        config = {
+            "allowed_networks": ["10.0.0.0/8"],
+            "idrac_verify_ssl": False,
+            "idrac_timeout": 30,
+            "manage_idrac_interface": False,
+            "update_device_serial": True,
+            "idrac_default_username": "root",
+            "idrac_default_password": "pw",
+        }
+        with patch(
+            "netbox_idrac_inventory.idrac.sync._config",
+            side_effect=config.__getitem__,
+        ):
+            with self.assertRaises(ValueError):
+                sync_server(server)
+
+        server.refresh_from_db()
+        self.assertEqual(server.sync_status, SyncStatusChoices.STATUS_FAILED)
+        self.assertIn("allowed_networks", server.sync_message)
 
 
 def _sample_adapters(*, second_port=True):
@@ -413,7 +476,7 @@ class SyncNetworkAdaptersTest(TestCase):
     """Network adapters become Modules in ModuleBays; ports become Interfaces."""
 
     def test_modules_and_interfaces_created(self):
-        from dcim.models import Interface, Module, ModuleBay, ModuleType
+        from dcim.models import Interface, ModuleBay, ModuleType
 
         from netbox_idrac_inventory.idrac.sync import sync_server
 
@@ -466,3 +529,24 @@ class SyncNetworkAdaptersTest(TestCase):
             .values_list("name", flat=True)
         )
         self.assertEqual(names, {"NIC.Integrated.1-1"})
+
+    def test_empty_adapter_list_does_not_wipe(self):
+        """A sync where iDRAC reports no adapters (likely a transient getter
+        failure) must keep the existing modules and interfaces."""
+        from dcim.models import Interface, ModuleBay
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="net-guard-01")
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=_sample_adapters()))
+        self.assertEqual(Interface.objects.filter(device=server.device).count(), 2)
+
+        sync_server(server, client=_make_fake_client(network_adapters=[]))
+        self.assertEqual(Interface.objects.filter(device=server.device).count(), 2)
+        self.assertTrue(
+            ModuleBay.objects.filter(
+                device=server.device, name="NIC.Integrated.1"
+            ).exists()
+        )
