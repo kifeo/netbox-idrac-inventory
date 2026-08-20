@@ -1,6 +1,21 @@
 # Changelog
 
-## 0.3.3 (unreleased)
+## 0.3.4 (unreleased)
+
+### Fixes
+
+- **Duplicate/failed iDRAC management interface on pre-existing devices**:
+  the iDRAC management interface was matched by the literal name "iDRAC"
+  only. A device onboarded before this plugin — with its mgmt interface
+  already named differently (e.g. "iDRAC9", "iDRAC9 1") and its real IP
+  already recorded — got a second interface created on sync; since IP
+  addresses are globally unique in NetBox, this could make the sync fail
+  outright rather than just leave a duplicate. Now matched by the
+  interface's already-recorded MAC address first (falling back to the
+  "iDRAC" name), reusing the existing interface and IP in place without
+  renaming it.
+
+## 0.3.3
 
 ### New features
 

@@ -363,6 +363,69 @@ class SyncIdracManagementTest(TestCase):
         device.refresh_from_db()
         self.assertEqual(str(device.oob_ip.address), "10.20.30.40/24")
 
+    def test_preexisting_management_interface_matched_by_mac_is_reused(self):
+        """
+        A device onboarded before this plugin, or whose device type template
+        names the iDRAC port something other than "iDRAC" (e.g. "iDRAC9",
+        "iDRAC9 1"), may already have a mgmt interface with the real-world
+        MAC and IP recorded. Syncing must adopt that interface (matched by
+        its already-recorded MAC) in place, instead of creating a second
+        "iDRAC"-named interface with a duplicate IP address — which NetBox
+        rejects outright, since IP addresses are globally unique.
+        """
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="oob-preexisting-01")
+        device = server.device
+
+        iface_ct = ContentType.objects.get_for_model(Interface)
+        old_iface = Interface.objects.create(
+            device=device, name="iDRAC9 1", mgmt_only=True
+        )
+        macobj = MACAddress.objects.create(
+            mac_address="AA:BB:CC:00:11:22",
+            assigned_object_type=iface_ct,
+            assigned_object_id=old_iface.pk,
+        )
+        old_iface.primary_mac_address = macobj
+        old_iface.save()
+        old_ip = IPAddress.objects.create(
+            address="10.20.30.40/24",
+            assigned_object_type=iface_ct,
+            assigned_object_id=old_iface.pk,
+        )
+
+        fake = _make_fake_client()
+        fake.get_idrac_network.return_value = {
+            "ipv4": "10.20.30.40",
+            "prefix_length": 24,
+            "gateway": "10.20.30.1",
+            "mac_address": "AA:BB:CC:00:11:22",
+            "hostname": "oob-preexisting-01",
+            "fqdn": "oob-preexisting-01.ipmi.example.com",
+            "speed_mbps": 1000,
+        }
+        sync_server(server, client=fake)
+
+        # No duplicate: the pre-existing "iDRAC9 1" interface was reused
+        # as-is (not renamed to "iDRAC"), and its existing IP address was
+        # reused rather than duplicated.
+        self.assertEqual(Interface.objects.filter(device=device).count(), 1)
+        old_iface.refresh_from_db()
+        self.assertEqual(old_iface.name, "iDRAC9 1")
+        self.assertEqual(
+            IPAddress.objects.filter(
+                assigned_object_type=iface_ct, assigned_object_id=old_iface.pk
+            ).count(),
+            1,
+        )
+        device.refresh_from_db()
+        self.assertEqual(device.oob_ip_id, old_ip.pk)
+
 
 class DellSyncAllJobTest(TestCase):
     """The recurring system job fans out one DellSyncJob per DellServer."""

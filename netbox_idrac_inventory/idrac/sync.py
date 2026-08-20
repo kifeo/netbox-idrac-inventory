@@ -409,8 +409,17 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
 
 def _sync_idrac_management(device, net: dict, _log) -> None:
     """
-    Model the iDRAC itself: a mgmt-only ``iDRAC`` Interface on the device with
-    its MAC and IPv4 address, set as the device's out-of-band (``oob_ip``).
+    Model the iDRAC itself: a mgmt-only Interface on the device with its MAC
+    and IPv4 address, set as the device's out-of-band (``oob_ip``).
+
+    Matched by MAC address first (when iDRAC reports one), falling back to
+    the literal name ``"iDRAC"``. This lets a device that already had a
+    management interface before being onboarded to the plugin — named
+    however the previous tooling/admin chose (e.g. "iDRAC9", "iDRAC9 1") —
+    get reconciled onto that existing interface in place, instead of
+    creating a duplicate interface (and a duplicate IP address, which is
+    globally unique in NetBox and would fail to save if the address was
+    already assigned elsewhere).
     """
     from dcim.choices import InterfaceTypeChoices
     from dcim.models import Interface, MACAddress
@@ -422,20 +431,34 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
         return
 
     iface_ct = ContentType.objects.get_for_model(Interface)
+    mac = (net.get("mac_address") or "").upper()
 
-    iface, _ = Interface.objects.get_or_create(
-        device=device,
-        name="iDRAC",
-        defaults={
-            "type": InterfaceTypeChoices.TYPE_1GE_FIXED,
-            "mgmt_only": True,
-        },
-    )
+    iface = None
+    if mac:
+        existing_mac = (
+            MACAddress.objects.filter(mac_address=mac, assigned_object_type=iface_ct)
+            .exclude(assigned_object_id=None)
+            .first()
+        )
+        if existing_mac:
+            candidate = existing_mac.assigned_object
+            if candidate is not None and candidate.device_id == device.pk:
+                iface = candidate
+
+    if iface is None:
+        iface, _ = Interface.objects.get_or_create(
+            device=device,
+            name="iDRAC",
+            defaults={
+                "type": InterfaceTypeChoices.TYPE_1GE_FIXED,
+                "mgmt_only": True,
+            },
+        )
+
     if not iface.mgmt_only:
         iface.mgmt_only = True
         iface.save(update_fields=["mgmt_only"])
 
-    mac = (net.get("mac_address") or "").upper()
     if mac:
         macobj, _ = MACAddress.objects.get_or_create(
             mac_address=mac,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netbox-idrac-inventory"
-version = "0.3.3"
+version = "0.3.4"
 description = "NetBox plugin to synchronize Dell servers with NetBox via iDRAC Redfish"
 readme = "README.md"
 requires-python = ">=3.10"
