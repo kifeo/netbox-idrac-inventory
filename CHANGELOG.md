@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.1 (unreleased)
+
+### Fixes
+
+- **iDRAC connect timeout**: `idrac_timeout` was only wired to sushy's
+  `read_timeout`, never `connect_timeout` (which defaults to unbounded). A
+  host that doesn't respond at the TCP level at all (dropped packets, no
+  RST/no-route) could hang far past the configured timeout instead of
+  failing as "unreachable" — on a subnet with many non-iDRAC or offline
+  addresses this made a full scan range extremely slow or effectively
+  stuck. Now bounded by the same configured timeout as the read phase.
+
+## 0.3.0
 
 ### New features
 

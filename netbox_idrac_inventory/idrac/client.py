@@ -74,7 +74,8 @@ class IdracClient:
     verify_ssl:
         Passed to sushy as ``verify``; set False for self-signed certs.
     timeout:
-        HTTP read timeout in seconds (sushy ``read_timeout``).
+        Timeout in seconds, applied to both the TCP connect phase and the
+        HTTP read phase (sushy ``connect_timeout`` / ``read_timeout``).
     """
 
     def __init__(
@@ -132,6 +133,11 @@ class IdracClient:
                 password=self._password,
                 verify=self._verify_ssl,
                 read_timeout=self._timeout,
+                # sushy defaults connect_timeout to None (no bound). Without
+                # this, a host that never responds at the TCP level (dropped
+                # packets, no RST) hangs well past `read_timeout` instead of
+                # failing as "unreachable" within the configured timeout.
+                connect_timeout=self._timeout,
             )
         except Exception as exc:
             # Map sushy auth/connection errors to our own type.
