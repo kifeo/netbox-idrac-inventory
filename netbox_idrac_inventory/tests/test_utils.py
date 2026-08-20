@@ -2,13 +2,14 @@
 from unittest.mock import patch
 
 from django.conf import settings
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from netbox_idrac_inventory.utils import (
     SecretDecryptionError,
     check_address_allowed,
     decrypt_secret,
     default_device_name,
+    detect_idrac_address,
     encrypt_secret,
     host_part,
 )
@@ -70,6 +71,54 @@ class CheckAddressAllowedTest(SimpleTestCase):
         ):
             with self.assertRaises(ValueError):
                 check_address_allowed("nowhere.example.com", self.NETWORKS)
+
+
+class DetectIdracAddressTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from dcim.models import DeviceRole, DeviceType, Manufacturer, Site
+
+        cls.site = Site.objects.create(name="Detect", slug="detect")
+        cls.role = DeviceRole.objects.create(name="Srv", slug="srv-detect")
+        mfr = Manufacturer.objects.create(name="Dell", slug="dell-detect")
+        cls.dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="R450", slug="r450-detect"
+        )
+
+    def _device(self, name):
+        from dcim.models import Device
+
+        return Device.objects.create(
+            name=name, site=self.site, role=self.role, device_type=self.dtype
+        )
+
+    def test_no_idrac_interface_returns_empty(self):
+        device = self._device("no-idrac")
+        self.assertEqual(detect_idrac_address(device), "")
+
+    def test_idrac_interface_without_ip_returns_empty(self):
+        from dcim.models import Interface
+
+        device = self._device("idrac-no-ip")
+        Interface.objects.create(device=device, name="iDRAC", type="1000base-t")
+        self.assertEqual(detect_idrac_address(device), "")
+
+    def test_idrac_interface_with_ip_is_detected(self):
+        from dcim.models import Interface
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        device = self._device("idrac-with-ip")
+        # Case-insensitive name match — pre-existing setups may differ in case.
+        iface = Interface.objects.create(
+            device=device, name="idrac", type="1000base-t"
+        )
+        IPAddress.objects.create(
+            address="10.20.30.40/24",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=iface.pk,
+        )
+        self.assertEqual(detect_idrac_address(device), "10.20.30.40")
 
 
 class SecretRotationTest(SimpleTestCase):

@@ -13,6 +13,7 @@ from .choices import ComponentTypeChoices, SyncStatusChoices
 from .models import DellComponent, DellScanRange, DellServer
 from .utils import (
     default_device_name,
+    detect_idrac_address,
     encrypt_secret,
     get_or_create_manufacturer,
 )
@@ -95,6 +96,20 @@ class DellServerForm(NetBoxModelForm):
             self.fields["name"].initial = device.name
             self.fields["site"].initial = device.site_id
             self.fields["role"].initial = device.role_id
+            return
+
+        # Attaching to an existing device (the "Add Dell server" button on a
+        # Device page, ?device=<pk>): if it already has an "iDRAC" interface
+        # with an IP — common for a device onboarded before this plugin —
+        # pre-fill the address so the sync can be added without retyping it.
+        if not self.is_bound:
+            target_pk = self.initial.get("device")
+            if target_pk:
+                target_device = Device.objects.filter(pk=target_pk).first()
+                if target_device:
+                    idrac_address = detect_idrac_address(target_device)
+                    if idrac_address:
+                        self.fields["idrac_address"].initial = idrac_address
 
     def _editing_device(self):
         # Accessing a OneToOne on an unsaved instance raises, not returns None.

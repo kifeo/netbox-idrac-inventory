@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.3.2 (unreleased)
+## 0.3.3 (unreleased)
+
+### New features
+
+- **Auto-detected iDRAC address for pre-existing devices**: when adding a
+  Dell server from an existing device's page, if that device already has an
+  interface named "iDRAC" with an IP assigned (common for a device
+  onboarded before this plugin), the iDRAC address field is pre-filled from
+  it instead of requiring it to be retyped.
+
+## 0.3.2
 
 ### Fixes
 

@@ -162,6 +162,27 @@ def get_or_create_manufacturer(name: str):
     return obj
 
 
+def detect_idrac_address(device) -> str:
+    """
+    Return the IP address on *device*'s existing "iDRAC" interface, if any.
+
+    Lets a device onboarded before this plugin — already cabled and
+    documented in NetBox with its iDRAC management interface and IP — get
+    its Dell server record attached without retyping an address that's
+    already there. Empty string when there's no such interface or it has
+    no IP assigned.
+    """
+    from dcim.models import Interface
+
+    iface = Interface.objects.filter(device=device, name__iexact="iDRAC").first()
+    if not iface:
+        return ""
+    ip = iface.ip_addresses.first()
+    if not ip:
+        return ""
+    return str(ip.address.ip)
+
+
 def default_device_name(address: str) -> str:
     """
     Derive a default device name from an iDRAC address.

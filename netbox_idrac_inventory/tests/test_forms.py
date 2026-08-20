@@ -76,6 +76,43 @@ class DellServerFormTest(TestCase):
         device.refresh_from_db()
         self.assertEqual(device.name, "preexisting")
 
+    def test_idrac_address_prefilled_from_existing_idrac_interface(self):
+        from dcim.models import Interface
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        mfr = Manufacturer.objects.create(name="Dell", slug="dell-prefill")
+        dt = DeviceType.objects.create(
+            manufacturer=mfr, model="R450", slug="r450-prefill")
+        device = Device.objects.create(
+            name="already-cabled", site=self.site, role=self.role,
+            device_type=dt)
+        iface = Interface.objects.create(
+            device=device, name="iDRAC", type="1000base-t")
+        IPAddress.objects.create(
+            address="10.1.2.3/24",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=iface.pk,
+        )
+
+        # Unbound form, as rendered for the "Add Dell server" button on the
+        # device page (?device=<pk> becomes the GET-request initial data).
+        form = DellServerForm(initial={"device": device.pk})
+        self.assertEqual(
+            form.fields["idrac_address"].initial, "10.1.2.3"
+        )
+
+    def test_idrac_address_not_prefilled_without_idrac_interface(self):
+        mfr = Manufacturer.objects.create(name="Dell", slug="dell-noprefill")
+        dt = DeviceType.objects.create(
+            manufacturer=mfr, model="R450", slug="r450-noprefill")
+        device = Device.objects.create(
+            name="no-idrac-iface", site=self.site, role=self.role,
+            device_type=dt)
+
+        form = DellServerForm(initial={"device": device.pk})
+        self.assertIsNone(form.fields["idrac_address"].initial)
+
 
 class EncryptedPasswordTest(TestCase):
     @classmethod

@@ -142,7 +142,10 @@ Two ways:
   device type, replaced by the real model on the first sync) and links it.
 - **From an existing device** — on a Device page, use the **iDRAC Inventory**
   panel's *Add* button; the new record is attached to that device instead of
-  creating a new one.
+  creating a new one. If the device already has an interface named "iDRAC"
+  with an IP assigned (common for a device onboarded before this plugin,
+  already cabled and documented), the iDRAC address field is pre-filled
+  from it.
 
 Optionally set a per-device iDRAC username; otherwise the plugin default is
 used.
