@@ -1,19 +1,49 @@
 # Changelog
 
-## 0.3.4 (unreleased)
+## 0.3.5 (unreleased)
 
 ### Fixes
 
-- **Duplicate/failed iDRAC management interface on pre-existing devices**:
-  the iDRAC management interface was matched by the literal name "iDRAC"
-  only. A device onboarded before this plugin — with its mgmt interface
-  already named differently (e.g. "iDRAC9", "iDRAC9 1") and its real IP
-  already recorded — got a second interface created on sync; since IP
-  addresses are globally unique in NetBox, this could make the sync fail
-  outright rather than just leave a duplicate. Now matched by the
-  interface's already-recorded MAC address first (falling back to the
-  "iDRAC" name), reusing the existing interface and IP in place without
-  renaming it.
+- **Sync no longer breaks on devices synced by an earlier version**: 0.3.2
+  started matching ports by MAC and renaming the match to the Dell port
+  name — but a device synced *before* that already holds both the original
+  interface and the duplicate the old code created under that very name.
+  Since `(device, name)` is unique, the rename raised `IntegrityError` and
+  every subsequent sync of that device failed. The clash is now resolved:
+  the empty duplicate is deleted so the cabled original can take the name.
+  When *both* interfaces carry a cable or IPs the port is skipped with a
+  warning instead, since only a human can decide which to keep.
+- **The iDRAC address is no longer recorded twice on a device**: an
+  existing copy assigned to another of the device's interfaces is moved
+  onto the matched interface rather than a second `IPAddress` being
+  created. An "iDRAC" interface left empty by an earlier sync is removed;
+  a leftover *copy of the address* is reported in the job log rather than
+  deleted, since an `IPAddress` may carry a DNS name or description.
+- **The iDRAC address pre-fill added in 0.3.3 never actually worked** in
+  the UI: it was written to the form field's `initial`, which `ModelForm`
+  overrides from the (empty) instance for model fields, so the rendered
+  input stayed blank. It now populates the form's `initial` data, verified
+  against the rendered page.
+
+### Corrections
+
+- The 0.3.4 note claimed IP addresses are globally unique in NetBox and
+  that a duplicate would fail to save. They are not: NetBox permits
+  duplicates by default, so the old behaviour silently recorded the same
+  address twice rather than failing.
+
+## 0.3.4
+
+### Fixes
+
+- **Duplicate iDRAC management interface on pre-existing devices**: the
+  iDRAC management interface was matched by the literal name "iDRAC" only.
+  A device onboarded before this plugin — with its mgmt interface already
+  named differently (e.g. "iDRAC9", "iDRAC9 1") and its real IP already
+  recorded — got a second interface created on sync, carrying a second
+  copy of the same address. Now matched by the interface's
+  already-recorded MAC address first (falling back to the "iDRAC" name),
+  reusing the existing interface in place without renaming it.
 
 ## 0.3.3
 

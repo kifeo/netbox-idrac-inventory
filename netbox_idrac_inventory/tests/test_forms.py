@@ -3,6 +3,7 @@ from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
 from django.test import TestCase
 
 from netbox_idrac_inventory.forms import DellServerForm
+from netbox_idrac_inventory.models import DellServer
 from netbox_idrac_inventory.utils import default_device_name
 
 
@@ -95,12 +96,14 @@ class DellServerFormTest(TestCase):
             assigned_object_id=iface.pk,
         )
 
-        # Unbound form, as rendered for the "Add Dell server" button on the
-        # device page (?device=<pk> becomes the GET-request initial data).
-        form = DellServerForm(initial={"device": device.pk})
-        self.assertEqual(
-            form.fields["idrac_address"].initial, "10.1.2.3"
+        # Built exactly as NetBox's ObjectEditView does on GET: an unsaved
+        # instance plus the querystring as initial data. Asserting on the
+        # bound field's value() (what actually gets rendered) rather than
+        # fields[...].initial, which self.initial overrides for model fields.
+        form = DellServerForm(
+            instance=DellServer(), initial={"device": str(device.pk)}
         )
+        self.assertEqual(form["idrac_address"].value(), "10.1.2.3")
 
     def test_idrac_address_not_prefilled_without_idrac_interface(self):
         mfr = Manufacturer.objects.create(name="Dell", slug="dell-noprefill")
@@ -110,8 +113,10 @@ class DellServerFormTest(TestCase):
             name="no-idrac-iface", site=self.site, role=self.role,
             device_type=dt)
 
-        form = DellServerForm(initial={"device": device.pk})
-        self.assertIsNone(form.fields["idrac_address"].initial)
+        form = DellServerForm(
+            instance=DellServer(), initial={"device": str(device.pk)}
+        )
+        self.assertFalse(form["idrac_address"].value())
 
 
 class EncryptedPasswordTest(TestCase):

@@ -233,7 +233,48 @@ def _interface_type_for_speed(speed_mbps):
     }.get(speed_mbps or 0, Ift.TYPE_OTHER)
 
 
-def _sync_interface(device, module, port: dict, iface_ct) -> None:
+def _interface_carries_data(iface) -> bool:
+    """
+    True if *iface* holds anything a human would not want silently deleted.
+
+    Used to tell a leftover interface the plugin itself created (empty: no
+    cable, no IPs) from one that carries real, manually-entered state.
+    """
+    return bool(iface.cable_id) or iface.ip_addresses.exists()
+
+
+def _drop_leftover_interface(iface, _log, reason: str) -> None:
+    """Delete an empty plugin-created interface and its dangling MACs."""
+    from dcim.models import MACAddress
+    from django.contrib.contenttypes.models import ContentType
+
+    _log.warning(
+        f"Removing empty duplicate interface '{iface}' on {iface.device}: "
+        f"{reason}"
+    )
+    MACAddress.objects.filter(
+        assigned_object_type=ContentType.objects.get_for_model(iface.__class__),
+        assigned_object_id=iface.pk,
+    ).delete()
+    iface.delete()
+
+
+def _match_interface_by_mac(device, mac: str, iface_ct):
+    """Return *device*'s interface already holding *mac*, if any."""
+    from dcim.models import MACAddress
+
+    if not mac:
+        return None
+    for macobj in MACAddress.objects.filter(
+        mac_address=mac, assigned_object_type=iface_ct
+    ).exclude(assigned_object_id=None):
+        candidate = macobj.assigned_object
+        if candidate is not None and candidate.device_id == device.pk:
+            return candidate
+    return None
+
+
+def _sync_interface(device, module, port: dict, iface_ct, _log) -> bool:
     """
     Upsert a single Interface (type, MAC, LLDP) for one adapter port.
 
@@ -243,33 +284,52 @@ def _sync_interface(device, module, port: dict, iface_ct) -> None:
     (e.g. "eth0"), not iDRAC's FQDD scheme — get reconciled onto its real
     Dell port name in place, instead of creating a duplicate interface and
     orphaning the original's cable/IP assignments.
+
+    Returns True when the port was reconciled, False when it was skipped
+    because the situation was too ambiguous to resolve safely.
     """
-    from dcim.models import Interface, MACAddress
+    from dcim.models import Interface
 
     itype = _interface_type_for_speed(port.get("speed_mbps"))
     name = port["name"]
     mac = (port.get("mac_address") or "").upper()
 
-    iface = None
-    if mac:
-        existing_mac = (
-            MACAddress.objects.filter(
-                mac_address=mac, assigned_object_type=iface_ct
-            )
-            .exclude(assigned_object_id=None)
-            .first()
-        )
-        if existing_mac:
-            candidate = existing_mac.assigned_object
-            if candidate is not None and candidate.device_id == device.pk:
-                iface = candidate
+    iface = _match_interface_by_mac(device, mac, iface_ct)
 
     if iface is None:
-        iface, _ = Interface.objects.get_or_create(
+        iface, _created = Interface.objects.get_or_create(
             device=device,
             name=name,
             defaults={"type": itype, "module": module},
         )
+    elif iface.name != name:
+        # Renaming the MAC-matched interface onto the Dell port name, but
+        # another interface already holds that name — the duplicate an
+        # earlier (pre-0.3.2) sync created before ports were matched by MAC.
+        # (device, name) is unique, so renaming blindly raises IntegrityError
+        # and breaks every subsequent sync of this device.
+        clash = (
+            Interface.objects.filter(device=device, name=name)
+            .exclude(pk=iface.pk)
+            .first()
+        )
+        if clash is not None:
+            if not _interface_carries_data(clash):
+                _drop_leftover_interface(
+                    clash, _log,
+                    f"'{iface}' holds the same MAC and is the cabled one.",
+                )
+            elif not _interface_carries_data(iface):
+                # The MAC-matched one is the empty leftover instead; keep
+                # the interface that actually carries the cable/IPs.
+                iface = clash
+            else:
+                _log.warning(
+                    f"Skipping port '{name}' on {device}: both '{iface}' "
+                    f"(same MAC) and '{clash}' (same name) carry cables or "
+                    "IPs. Merge them by hand, then sync again."
+                )
+                return False
 
     changed = False
     if iface.name != name:
@@ -296,6 +356,8 @@ def _sync_interface(device, module, port: dict, iface_ct) -> None:
         iface.save()
 
     if mac:
+        from dcim.models import MACAddress
+
         macobj, _ = MACAddress.objects.get_or_create(
             mac_address=mac,
             assigned_object_type=iface_ct,
@@ -304,6 +366,8 @@ def _sync_interface(device, module, port: dict, iface_ct) -> None:
         if iface.primary_mac_address_id != macobj.pk:
             iface.primary_mac_address = macobj
             iface.save(update_fields=["primary_mac_address"])
+
+    return True
 
 
 def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
@@ -372,8 +436,8 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
             if not port.get("name"):
                 continue
             desired_ports.add(port["name"])
-            _sync_interface(device, module, port, iface_ct)
-            interfaces_synced += 1
+            if _sync_interface(device, module, port, iface_ct, _log):
+                interfaces_synced += 1
 
         # Drop interfaces on this module the adapter no longer reports.
         # Deleting an interface also removes its cable and IP assignments,
@@ -416,10 +480,10 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
     the literal name ``"iDRAC"``. This lets a device that already had a
     management interface before being onboarded to the plugin — named
     however the previous tooling/admin chose (e.g. "iDRAC9", "iDRAC9 1") —
-    get reconciled onto that existing interface in place, instead of
-    creating a duplicate interface (and a duplicate IP address, which is
-    globally unique in NetBox and would fail to save if the address was
-    already assigned elsewhere).
+    get reconciled onto that existing interface in place, rather than
+    getting a second interface carrying a second copy of the same IP.
+    The matched interface keeps its name: unlike the NIC ports there is only
+    one management interface, so an admin-chosen name is left alone.
     """
     from dcim.choices import InterfaceTypeChoices
     from dcim.models import Interface, MACAddress
@@ -433,17 +497,7 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
     iface_ct = ContentType.objects.get_for_model(Interface)
     mac = (net.get("mac_address") or "").upper()
 
-    iface = None
-    if mac:
-        existing_mac = (
-            MACAddress.objects.filter(mac_address=mac, assigned_object_type=iface_ct)
-            .exclude(assigned_object_id=None)
-            .first()
-        )
-        if existing_mac:
-            candidate = existing_mac.assigned_object
-            if candidate is not None and candidate.device_id == device.pk:
-                iface = candidate
+    iface = _match_interface_by_mac(device, mac, iface_ct)
 
     if iface is None:
         iface, _ = Interface.objects.get_or_create(
@@ -469,16 +523,65 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
             iface.primary_mac_address = macobj
             iface.save(update_fields=["primary_mac_address"])
 
+    # Move an existing copy of this address onto the matched interface rather
+    # than creating a second one: NetBox does not enforce global uniqueness by
+    # default, so a blind get_or_create keyed on the interface would silently
+    # leave the same iDRAC address recorded twice on the same device.
     cidr = f"{address}/{net.get('prefix_length') or 32}"
-    ip, _ = IPAddress.objects.get_or_create(
-        address=cidr,
-        assigned_object_type=iface_ct,
-        assigned_object_id=iface.pk,
+    device_iface_ids = list(
+        Interface.objects.filter(device=device).values_list("pk", flat=True)
     )
+    ip = (
+        IPAddress.objects.filter(
+            address=cidr,
+            assigned_object_type=iface_ct,
+            assigned_object_id__in=device_iface_ids,
+        )
+        .order_by("pk")
+        .first()
+    )
+    if ip is None:
+        ip = IPAddress.objects.create(
+            address=cidr,
+            assigned_object_type=iface_ct,
+            assigned_object_id=iface.pk,
+        )
+    elif ip.assigned_object_id != iface.pk:
+        ip.assigned_object_id = iface.pk
+        ip.save(update_fields=["assigned_object_id"])
+
     if device.oob_ip_id != ip.pk:
         device.oob_ip = ip
         device.save(update_fields=["oob_ip"])
         _log.info(f"Set iDRAC OOB IP {cidr} on {device}")
+
+    # Now that the address (and MAC) live on the matched interface, a plain
+    # "iDRAC" interface left behind by an earlier sync is empty and can go.
+    if iface.name != "iDRAC":
+        leftover = (
+            Interface.objects.filter(device=device, name="iDRAC")
+            .exclude(pk=iface.pk)
+            .first()
+        )
+        if leftover is not None and not _interface_carries_data(leftover):
+            _drop_leftover_interface(
+                leftover, _log, f"'{iface}' holds the iDRAC MAC and address.",
+            )
+
+    # Extra copies of the same address elsewhere on the device are left alone:
+    # an IPAddress may carry a DNS name, tenant or description a human
+    # entered, so it is reported rather than deleted.
+    for extra in IPAddress.objects.filter(
+        address=cidr,
+        assigned_object_type=iface_ct,
+        assigned_object_id__in=device_iface_ids,
+    ).exclude(pk=ip.pk):
+        _log.warning(
+            f"{device} has a second copy of {cidr} on interface "
+            f"'{extra.assigned_object}' (left over from an earlier sync). "
+            "Delete it by hand once you've checked it holds nothing you "
+            "need."
+        )
 
 
 # ---------------------------------------------------------------------------

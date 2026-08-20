@@ -426,6 +426,101 @@ class SyncIdracManagementTest(TestCase):
         device.refresh_from_db()
         self.assertEqual(device.oob_ip_id, old_ip.pk)
 
+    def test_empty_idrac_leftover_is_removed(self):
+        """
+        A device whose real mgmt interface is named something else, plus an
+        empty "iDRAC" interface a pre-MAC-matching sync created, must end up
+        with just the real one — the empty leftover is dropped.
+        """
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="oob-leftover-01")
+        device = server.device
+        iface_ct = ContentType.objects.get_for_model(Interface)
+
+        real = Interface.objects.create(
+            device=device, name="iDRAC9 1", mgmt_only=True
+        )
+        MACAddress.objects.create(
+            mac_address="AA:BB:CC:00:11:22",
+            assigned_object_type=iface_ct,
+            assigned_object_id=real.pk,
+        )
+        leftover = Interface.objects.create(
+            device=device, name="iDRAC", mgmt_only=True
+        )
+
+        fake = _make_fake_client()
+        fake.get_idrac_network.return_value = {
+            "ipv4": "10.20.30.40",
+            "prefix_length": 24,
+            "mac_address": "AA:BB:CC:00:11:22",
+            "fqdn": "oob-leftover-01.ipmi.example.com",
+            "speed_mbps": 1000,
+        }
+        sync_server(server, client=fake)
+
+        self.assertFalse(Interface.objects.filter(pk=leftover.pk).exists())
+        self.assertEqual(Interface.objects.filter(device=device).count(), 1)
+
+    def test_address_is_not_duplicated_onto_a_second_interface(self):
+        """
+        The address must not be recorded twice on the same device: a copy
+        already assigned to another of the device's interfaces is moved onto
+        the matched one instead of a new IPAddress being created.
+        """
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="oob-noduplicate-01")
+        device = server.device
+        iface_ct = ContentType.objects.get_for_model(Interface)
+
+        # The address is recorded on an interface that does *not* hold the
+        # iDRAC MAC, so the matched interface differs from the IP's holder.
+        real = Interface.objects.create(
+            device=device, name="iDRAC9 1", mgmt_only=True
+        )
+        MACAddress.objects.create(
+            mac_address="AA:BB:CC:00:11:22",
+            assigned_object_type=iface_ct,
+            assigned_object_id=real.pk,
+        )
+        stray = Interface.objects.create(
+            device=device, name="mgmt-old", mgmt_only=True
+        )
+        existing_ip = IPAddress.objects.create(
+            address="10.20.30.40/24",
+            assigned_object_type=iface_ct,
+            assigned_object_id=stray.pk,
+        )
+
+        fake = _make_fake_client()
+        fake.get_idrac_network.return_value = {
+            "ipv4": "10.20.30.40",
+            "prefix_length": 24,
+            "mac_address": "AA:BB:CC:00:11:22",
+            "fqdn": "oob-noduplicate-01.ipmi.example.com",
+            "speed_mbps": 1000,
+        }
+        sync_server(server, client=fake)
+
+        # Still exactly one IPAddress for that address, moved (same pk) onto
+        # the interface holding the iDRAC MAC.
+        self.assertEqual(
+            IPAddress.objects.filter(address="10.20.30.40/24").count(), 1
+        )
+        existing_ip.refresh_from_db()
+        self.assertEqual(existing_ip.assigned_object_id, real.pk)
+        device.refresh_from_db()
+        self.assertEqual(device.oob_ip_id, existing_ip.pk)
+
 
 class DellSyncAllJobTest(TestCase):
     """The recurring system job fans out one DellSyncJob per DellServer."""
@@ -641,6 +736,100 @@ class SyncNetworkAdaptersTest(TestCase):
 
         # The cable is still attached to the same (renamed) interface.
         self.assertEqual(old_iface.cable_id, cable.pk)
+
+    def test_upgrade_from_state_left_by_a_pre_mac_matching_sync(self):
+        """
+        A device synced before ports were matched by MAC holds *both* the
+        original interface (real MAC + cable) and the duplicate that sync
+        created under the Dell port name. Renaming the original onto that
+        name violates the unique (device, name) constraint, so syncing such
+        a device must resolve the clash — by dropping the empty duplicate —
+        rather than raising IntegrityError on every subsequent sync.
+        """
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="upgrade-dupe-01")
+        device = server.device
+        iface_ct = ContentType.objects.get_for_model(Interface)
+
+        original = Interface.objects.create(
+            device=device, name="eth0", type="10gbase-x-sfpp"
+        )
+        MACAddress.objects.create(
+            mac_address="5C:6F:69:88:06:D0",
+            assigned_object_type=iface_ct,
+            assigned_object_id=original.pk,
+        )
+        duplicate = Interface.objects.create(
+            device=device, name="NIC.Integrated.1-1", type="10gbase-x-sfpp"
+        )
+        MACAddress.objects.create(
+            mac_address="5C:6F:69:88:06:D0",
+            assigned_object_type=iface_ct,
+            assigned_object_id=duplicate.pk,
+        )
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=_sample_adapters(second_port=False)))
+
+        # The empty duplicate is gone; the original kept its identity (pk)
+        # and now carries the Dell port name.
+        self.assertEqual(Interface.objects.filter(device=device).count(), 1)
+        surviving = Interface.objects.get(device=device)
+        self.assertEqual(surviving.pk, original.pk)
+        self.assertEqual(surviving.name, "NIC.Integrated.1-1")
+        self.assertFalse(Interface.objects.filter(pk=duplicate.pk).exists())
+
+    def test_clash_where_both_interfaces_carry_data_is_skipped(self):
+        """
+        When the MAC-matched interface and the name-holding one both carry a
+        cable or IPs, the plugin cannot know which to keep: it must leave
+        both alone rather than delete or rename either.
+        """
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="upgrade-ambiguous-01")
+        device = server.device
+        iface_ct = ContentType.objects.get_for_model(Interface)
+
+        original = Interface.objects.create(
+            device=device, name="eth0", type="10gbase-x-sfpp"
+        )
+        MACAddress.objects.create(
+            mac_address="5C:6F:69:88:06:D0",
+            assigned_object_type=iface_ct,
+            assigned_object_id=original.pk,
+        )
+        IPAddress.objects.create(
+            address="10.99.0.1/24",
+            assigned_object_type=iface_ct,
+            assigned_object_id=original.pk,
+        )
+        other = Interface.objects.create(
+            device=device, name="NIC.Integrated.1-1", type="10gbase-x-sfpp"
+        )
+        IPAddress.objects.create(
+            address="10.99.0.2/24",
+            assigned_object_type=iface_ct,
+            assigned_object_id=other.pk,
+        )
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=_sample_adapters(second_port=False)))
+
+        # Both survive, untouched: no rename, no deletion, no crash.
+        self.assertEqual(Interface.objects.filter(device=device).count(), 2)
+        original.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(original.name, "eth0")
+        self.assertEqual(other.name, "NIC.Integrated.1-1")
 
     def test_removed_port_is_deleted(self):
         from dcim.models import Interface

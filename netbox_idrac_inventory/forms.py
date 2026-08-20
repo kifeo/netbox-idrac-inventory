@@ -102,6 +102,11 @@ class DellServerForm(NetBoxModelForm):
         # Device page, ?device=<pk>): if it already has an "iDRAC" interface
         # with an IP — common for a device onboarded before this plugin —
         # pre-fill the address so the sync can be added without retyping it.
+        #
+        # This writes to self.initial, not fields[...].initial: idrac_address
+        # is a model field, so ModelForm has already seeded self.initial with
+        # the (empty) value off the unsaved instance, and self.initial is what
+        # wins when the widget is rendered.
         if not self.is_bound:
             target_pk = self.initial.get("device")
             if target_pk:
@@ -109,7 +114,7 @@ class DellServerForm(NetBoxModelForm):
                 if target_device:
                     idrac_address = detect_idrac_address(target_device)
                     if idrac_address:
-                        self.fields["idrac_address"].initial = idrac_address
+                        self.initial["idrac_address"] = idrac_address
 
     def _editing_device(self):
         # Accessing a OneToOne on an unsaved instance raises, not returns None.
