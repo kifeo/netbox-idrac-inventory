@@ -24,10 +24,14 @@ interface via the Redfish API.
 - **Native network modelling** — each physical network adapter is created as a
   NetBox `Module` (with a matching `ModuleType`) installed in a `ModuleBay` on
   the device, and each physical port becomes an `Interface` with its MAC
-  address and link speed. The NUMA node the adapter's PCIe lanes are wired
-  to (from Dell's `CPUAffinity`, converted from Dell's 1-indexed CPU socket
-  to a 0-indexed NUMA node) is stored in the `numa_node` custom field on the
-  `ModuleBay`.
+  address and link speed. Ports are matched to an existing interface by MAC
+  address first, falling back to name — so a device that already had
+  interfaces before being onboarded (under whatever names/cables were there
+  previously) gets reconciled onto its real Dell port name in place, rather
+  than getting a duplicate interface. The NUMA node the adapter's PCIe
+  lanes are wired to (from Dell's `CPUAffinity`, converted from Dell's
+  1-indexed CPU socket to a 0-indexed NUMA node) is stored in the
+  `numa_node` custom field on the `ModuleBay`.
 - **LLDP discovery** — the LLDP neighbour reported by iDRAC for each connected
   port (remote switch + remote port) is stored in the `lldp_remote_chassis`
   and `lldp_remote_port` custom fields on the interface. These, and

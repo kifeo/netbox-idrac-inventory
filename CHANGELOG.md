@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.3.1 (unreleased)
+## 0.3.2 (unreleased)
+
+### Fixes
+
+- **Duplicate interfaces on pre-existing devices**: network ports were
+  matched by name only (Dell's FQDD, e.g. `NIC.Integrated.1-1`). A device
+  onboarded before this plugin — with interfaces already named/cabled under
+  a different scheme (e.g. `eth0`) — got a second, duplicate interface
+  created alongside the original on every sync, leaving the original (and
+  its cable/IP) orphaned. Ports are now matched by their already-recorded
+  MAC address first, falling back to name; a matched interface is renamed
+  to the Dell port name in place, keeping its cable and IP assignments.
+
+## 0.3.1
 
 ### Fixes
 

@@ -234,17 +234,47 @@ def _interface_type_for_speed(speed_mbps):
 
 
 def _sync_interface(device, module, port: dict, iface_ct) -> None:
-    """Upsert a single Interface (type, MAC, LLDP) for one adapter port."""
+    """
+    Upsert a single Interface (type, MAC, LLDP) for one adapter port.
+
+    Matched by MAC address first (when the port reports one), falling back
+    to name. This lets a device that already had interfaces before being
+    onboarded to the plugin — named however the previous tooling/admin chose
+    (e.g. "eth0"), not iDRAC's FQDD scheme — get reconciled onto its real
+    Dell port name in place, instead of creating a duplicate interface and
+    orphaning the original's cable/IP assignments.
+    """
     from dcim.models import Interface, MACAddress
 
     itype = _interface_type_for_speed(port.get("speed_mbps"))
-    iface, _ = Interface.objects.get_or_create(
-        device=device,
-        name=port["name"],
-        defaults={"type": itype, "module": module},
-    )
+    name = port["name"]
+    mac = (port.get("mac_address") or "").upper()
+
+    iface = None
+    if mac:
+        existing_mac = (
+            MACAddress.objects.filter(
+                mac_address=mac, assigned_object_type=iface_ct
+            )
+            .exclude(assigned_object_id=None)
+            .first()
+        )
+        if existing_mac:
+            candidate = existing_mac.assigned_object
+            if candidate is not None and candidate.device_id == device.pk:
+                iface = candidate
+
+    if iface is None:
+        iface, _ = Interface.objects.get_or_create(
+            device=device,
+            name=name,
+            defaults={"type": itype, "module": module},
+        )
 
     changed = False
+    if iface.name != name:
+        iface.name = name
+        changed = True
     if iface.module_id != module.pk:
         iface.module = module
         changed = True
@@ -265,7 +295,6 @@ def _sync_interface(device, module, port: dict, iface_ct) -> None:
     if changed:
         iface.save()
 
-    mac = (port.get("mac_address") or "").upper()
     if mac:
         macobj, _ = MACAddress.objects.get_or_create(
             mac_address=mac,

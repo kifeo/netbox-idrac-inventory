@@ -512,6 +512,73 @@ class SyncNetworkAdaptersTest(TestCase):
             port1.custom_field_data.get("lldp_remote_port"), "Ethernet1/5"
         )
 
+    def test_preexisting_interface_matched_by_mac_is_reused_not_duplicated(self):
+        """
+        A device onboarded before this plugin may already have an interface
+        under a name iDRAC doesn't report (e.g. "eth0"), with a real Cable
+        attached. Syncing must adopt that interface (matched by its already-
+        recorded MAC, then renamed to the Dell port name) instead of
+        creating a second, duplicate interface and orphaning the cable.
+        """
+        from dcim.models import (
+            Cable,
+            Device,
+            DeviceRole,
+            DeviceType,
+            Interface,
+            MACAddress,
+            Manufacturer,
+            Site,
+        )
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="preexisting-01")
+        device = server.device
+
+        # Pre-existing interface, manually named, with the real-world MAC
+        # already recorded, cabled to another device's port.
+        iface_ct = ContentType.objects.get_for_model(Interface)
+        old_iface = Interface.objects.create(
+            device=device, name="eth0", type="10gbase-x-sfpp"
+        )
+        macobj = MACAddress.objects.create(
+            mac_address="5C:6F:69:88:06:D0",
+            assigned_object_type=iface_ct,
+            assigned_object_id=old_iface.pk,
+        )
+        old_iface.primary_mac_address = macobj
+        old_iface.save()
+
+        site, _ = Site.objects.get_or_create(name="Cable Test", slug="cable-test")
+        role, _ = DeviceRole.objects.get_or_create(name="Switch", slug="switch")
+        mfr, _ = Manufacturer.objects.get_or_create(name="Generic", slug="generic")
+        dt, _ = DeviceType.objects.get_or_create(
+            manufacturer=mfr, model="Switch", slug="switch"
+        )
+        switch = Device.objects.create(
+            name="switch-01", site=site, device_type=dt, role=role
+        )
+        switch_iface = Interface.objects.create(
+            device=switch, name="Ethernet1", type="10gbase-x-sfpp"
+        )
+        cable = Cable.objects.create()
+        cable.a_terminations = [old_iface]
+        cable.b_terminations = [switch_iface]
+        cable.save()
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=_sample_adapters()))
+
+        # No duplicate: the pre-existing interface was reused and renamed.
+        self.assertEqual(Interface.objects.filter(device=device).count(), 2)
+        old_iface.refresh_from_db()
+        self.assertEqual(old_iface.name, "NIC.Integrated.1-1")
+
+        # The cable is still attached to the same (renamed) interface.
+        self.assertEqual(old_iface.cable_id, cable.pk)
+
     def test_removed_port_is_deleted(self):
         from dcim.models import Interface
 
