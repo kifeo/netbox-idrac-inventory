@@ -32,7 +32,7 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tlegentil/netbox-idrac-inventory"
+Homepage = "https://github.com/kifeo/netbox-idrac-inventory"
 
 [tool.setuptools.packages.find]
 include = ["netbox_idrac_inventory*"]
