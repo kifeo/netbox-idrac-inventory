@@ -24,11 +24,14 @@ interface via the Redfish API.
 - **Native network modelling** — each physical network adapter is created as a
   NetBox `Module` (with a matching `ModuleType`) installed in a `ModuleBay` on
   the device, and each physical port becomes an `Interface` with its MAC
-  address and link speed.
+  address and link speed. The NUMA node the adapter's PCIe lanes are wired
+  to (from Dell's `CPUAffinity`, converted from Dell's 1-indexed CPU socket
+  to a 0-indexed NUMA node) is stored in the `numa_node` custom field on the
+  `ModuleBay`.
 - **LLDP discovery** — the LLDP neighbour reported by iDRAC for each connected
   port (remote switch + remote port) is stored in the `lldp_remote_chassis`
-  and `lldp_remote_port` custom fields on the interface. These custom fields
-  are created automatically on first migrate.
+  and `lldp_remote_port` custom fields on the interface. These, and
+  `numa_node`, are created automatically on first migrate.
 - **Firmware inventory** — the Redfish `UpdateService/FirmwareInventory` is
   read on each sync and the installed version is written to matching
   components (by FQDD), covering parts whose own resource omits a version.
@@ -41,7 +44,9 @@ interface via the Redfish API.
 - **Network discovery** — define a **Scan Range** (CIDR / range / hosts); a
   discovery job probes each iDRAC and imports it, attaching to an existing
   device with the same service tag when one exists (no duplicate) or creating
-  a new one.
+  a new one. New devices get the range's site as a default and are flagged
+  on the **Site Review** page so it can be confirmed or corrected per device
+  — handy when one iDRAC subnet spans several sites.
 - **Full REST API** at `/api/plugins/idrac-inventory/` (servers + components).
 - **GraphQL** queries `dell_server` / `dell_server_list` /
   `dell_component` / `dell_component_list` exposed through NetBox's Strawberry
@@ -170,8 +175,14 @@ Under **Plugins → iDRAC Inventory → Scan Ranges → Add**, define one or mor
 targets (one per line or comma-separated): a CIDR (`10.0.0.0/24`), a range
 (`10.0.0.10-20`) or single hosts, plus the site and role for created devices.
 Click **Run scan** (or `POST .../scan-ranges/<id>/run/`). For each reachable
-iDRAC the discovery attaches to an existing device with the same service tag,
-or creates one, then syncs it.
+iDRAC the discovery attaches to an existing device with the same service tag
+(its site is left unchanged), or creates one, then syncs it.
+
+Newly-created devices land with the range's site as a **best-effort default
+only** — useful when one iDRAC management subnet spans several NetBox sites
+and a single range can't be right for every host. Each such device is
+flagged for review; go to **Plugins → iDRAC Inventory → Dell Servers → Site
+Review** to confirm or correct the site per device.
 
 ### REST API overview
 

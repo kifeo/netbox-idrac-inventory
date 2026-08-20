@@ -178,9 +178,26 @@ class DellServerFilterForm(NetBoxModelFilterSetForm):
         required=False,
         label="Model",
     )
+    site_confirmed = forms.NullBooleanField(required=False)
 
     fieldsets = (
-        FieldSet("q", "sync_status", "model_search", name="Search"),
+        FieldSet("q", "sync_status", "model_search", "site_confirmed", name="Search"),
+    )
+
+
+class DellServerSiteReviewForm(forms.Form):
+    """One row of the site-confirmation review formset.
+
+    ``server_id`` is explicit (rather than relying on formset row order) so a
+    POST still matches the right DellServer even if the pending set changed
+    between the GET and the POST.
+    """
+
+    server_id = forms.IntegerField(widget=forms.HiddenInput)
+    site = DynamicModelChoiceField(
+        queryset=Site.objects.all(),
+        required=False,
+        help_text="Leave blank to skip this server for now.",
     )
 
 
@@ -271,7 +288,14 @@ class DellComponentFilterForm(NetBoxModelFilterSetForm):
 class DellScanRangeForm(NetBoxModelForm):
     """Create / edit form for a scan range."""
 
-    site = DynamicModelChoiceField(queryset=Site.objects.all())
+    site = DynamicModelChoiceField(
+        queryset=Site.objects.all(),
+        help_text=(
+            "Site assigned to newly-created devices. If an iDRAC's service "
+            "tag matches an existing device, that device's site is left "
+            "unchanged."
+        ),
+    )
     role = DynamicModelChoiceField(queryset=DeviceRole.objects.all())
     idrac_password = forms.CharField(
         required=False,

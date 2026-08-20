@@ -159,7 +159,7 @@ def _reconcile_components(server, rows: list[dict], _log) -> tuple[int, int, int
         name = row["name"]
         if not name:
             _log.warning(
-                "Skipping %s component with empty name.", row["component_type"]
+                f"Skipping {row['component_type']} component with empty name."
             )
             continue
         ctype = row["component_type"]
@@ -216,7 +216,7 @@ def _set_device_type(device, model: str, _log) -> None:
     if device.device_type_id != dtype.pk:
         device.device_type = dtype
         device.save(update_fields=["device_type"])
-        _log.info("Set device '%s' type to '%s'.", device, model)
+        _log.info(f"Set device '{device}' type to '{model}'.")
 
 
 def _interface_type_for_speed(speed_mbps):
@@ -322,6 +322,10 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
             mtype.save(update_fields=["part_number"])
 
         bay, _ = ModuleBay.objects.get_or_create(device=device, name=name)
+        numa_node = adapter.get("numa_node", "")
+        if bay.custom_field_data.get("numa_node") != numa_node:
+            bay.custom_field_data["numa_node"] = numa_node
+            bay.save()
         Module.objects.update_or_create(
             module_bay=bay,
             defaults={
@@ -352,9 +356,9 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
             )
             for iface in stale_ifaces:
                 _log.warning(
-                    "Removing interface '%s' on %s: no longer reported by "
-                    "iDRAC (cable/IP assignments are removed with it).",
-                    iface, device,
+                    f"Removing interface '{iface}' on {device}: no longer "
+                    "reported by iDRAC (cable/IP assignments are removed "
+                    "with it)."
                 )
                 iface.delete()
 
@@ -365,9 +369,8 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
     ).exclude(name__in=desired_bays)
     for bay in stale_bays:
         _log.warning(
-            "Removing module bay '%s' on %s: adapter no longer reported "
-            "by iDRAC.",
-            bay.name, device,
+            f"Removing module bay '{bay.name}' on {device}: adapter no "
+            "longer reported by iDRAC."
         )
         Module.objects.filter(module_bay=bay).delete()
         bay.delete()
@@ -423,7 +426,7 @@ def _sync_idrac_management(device, net: dict, _log) -> None:
     if device.oob_ip_id != ip.pk:
         device.oob_ip = ip
         device.save(update_fields=["oob_ip"])
-        _log.info("Set iDRAC OOB IP %s on %s", cidr, device)
+        _log.info(f"Set iDRAC OOB IP {cidr} on {device}")
 
 
 # ---------------------------------------------------------------------------
@@ -456,12 +459,12 @@ def _update_device(server, _log) -> None:
             device.serial = server.service_tag
             device.save(update_fields=["serial"])
         except Exception as exc:
-            _log.warning("Could not update device serial: %s", exc)
+            _log.warning(f"Could not update device serial: {exc}")
     if server.model:
         try:
             _set_device_type(device, server.model, _log)
         except Exception as exc:
-            _log.warning("Could not set device type: %s", exc)
+            _log.warning(f"Could not set device type: {exc}")
 
 
 def _warn_on_duplicate_serial(device, service_tag: str, _log) -> None:
@@ -481,10 +484,9 @@ def _warn_on_duplicate_serial(device, service_tag: str, _log) -> None:
     )
     if clash:
         _log.warning(
-            "Service tag '%s' is already on device '%s'; '%s' may be a "
-            "duplicate. Consider attaching the Dell server to the existing "
-            "device instead.",
-            service_tag, clash, device,
+            f"Service tag '{service_tag}' is already on device '{clash}'; "
+            f"'{device}' may be a duplicate. Consider attaching the Dell "
+            "server to the existing device instead."
         )
 
 
@@ -498,7 +500,7 @@ def _mark_failed(server, exc: Exception, _log) -> None:
             update_fields=["sync_status", "sync_message", "last_synced"]
         )
     except Exception as save_exc:
-        _log.error("Could not save FAILED status for %s: %s", server, save_exc)
+        _log.error(f"Could not save FAILED status for {server}: {save_exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -547,9 +549,8 @@ def sync_server(
             )
 
         _log.info(
-            "Sync %s (iDRAC %s): fetching inventory…",
-            server,
-            server.idrac_address,
+            f"Sync {server} (iDRAC {server.idrac_address}): fetching "
+            "inventory…"
         )
         # Network I/O happens before the DB transaction.
         system_info = client.get_system_info()
@@ -576,7 +577,7 @@ def sync_server(
             f"{deleted} deleted; {modules} network modules, "
             f"{interfaces} interfaces."
         )
-        _log.info("%s — %s", server, message)
+        _log.info(f"{server} — {message}")
         return {
             "ok": True,
             "components_created": created,
@@ -588,7 +589,7 @@ def sync_server(
         }
 
     except Exception as exc:
-        _log.error("Sync failed for %s: %s", server, exc)
+        _log.error(f"Sync failed for {server}: {exc}")
         _mark_failed(server, exc, _log)
         raise
 

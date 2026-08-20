@@ -2,8 +2,10 @@
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.db import transaction
 from django.db.models import Count
-from django.shortcuts import get_object_or_404, redirect
+from django.forms import formset_factory
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views import View
 from netbox.views.generic import (
     BulkDeleteView,
@@ -25,10 +27,13 @@ from .forms import (
     DellScanRangeForm,
     DellServerFilterForm,
     DellServerForm,
+    DellServerSiteReviewForm,
 )
 from .jobs import enqueue_discovery, enqueue_sync
 from .models import DellComponent, DellScanRange, DellServer
 from .tables import DellComponentTable, DellScanRangeTable, DellServerTable
+
+DellServerSiteReviewFormSet = formset_factory(DellServerSiteReviewForm, extra=0)
 
 # ---------------------------------------------------------------------------
 # DellServer views
@@ -116,6 +121,65 @@ class DellServerBulkSyncView(LoginRequiredMixin, PermissionRequiredMixin, View):
         else:
             messages.warning(request, "No servers selected for sync.")
         return redirect("plugins:netbox_idrac_inventory:dellserver_list")
+
+
+class DellServerSiteReviewView(LoginRequiredMixin, PermissionRequiredMixin, View):
+    """Confirm or correct the site of servers auto-created by discovery.
+
+    One row per DellServer with ``site_confirmed=False``, each with its own
+    site picker — a shared bulk-edit value doesn't fit here since a single
+    scan range's subnet can span several sites.
+    """
+
+    permission_required = "netbox_idrac_inventory.change_dellserver"
+    template_name = "netbox_idrac_inventory/dellserver_site_review.html"
+
+    def _pending(self):
+        return (
+            DellServer.objects.filter(site_confirmed=False)
+            .select_related("device", "device__site")
+            .order_by("device__name")
+        )
+
+    def get(self, request):
+        servers = list(self._pending())
+        initial = [{"server_id": s.pk, "site": s.device.site_id} for s in servers]
+        formset = DellServerSiteReviewFormSet(initial=initial)
+        return render(request, self.template_name, {
+            "rows": list(zip(servers, formset.forms, strict=True)),
+            "formset": formset,
+        })
+
+    def post(self, request):
+        formset = DellServerSiteReviewFormSet(request.POST)
+        confirmed = 0
+        if formset.is_valid():
+            with transaction.atomic():
+                for form in formset:
+                    server_id = form.cleaned_data.get("server_id")
+                    site = form.cleaned_data.get("site")
+                    if not server_id or not site:
+                        continue  # left blank: skip for now, still pending
+                    try:
+                        server = DellServer.objects.select_related("device").get(
+                            pk=server_id, site_confirmed=False,
+                        )
+                    except DellServer.DoesNotExist:
+                        continue  # stale row: already confirmed elsewhere
+                    server.device.site = site
+                    server.device.save()
+                    server.site_confirmed = True
+                    server.save(update_fields=["site_confirmed"])
+                    confirmed += 1
+            if confirmed:
+                messages.success(
+                    request, f"Confirmed the site for {confirmed} server(s)."
+                )
+            else:
+                messages.warning(request, "No servers were confirmed.")
+        else:
+            messages.error(request, "Could not process the submitted form.")
+        return redirect("plugins:netbox_idrac_inventory:dellserver_site_review")
 
 
 # ---------------------------------------------------------------------------

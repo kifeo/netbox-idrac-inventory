@@ -13,6 +13,7 @@ class DellServerTable(NetBoxTable):
     # sync_status / health rendered as colored badges via ChoiceFieldColumn
     sync_status = ChoiceFieldColumn()
     health = ChoiceFieldColumn()
+    site_confirmed = tables.BooleanColumn(verbose_name="Site confirmed")
     # Pre-annotated component count (queryset must annotate as "component_count")
     component_count = tables.Column(
         verbose_name="Components",
@@ -30,6 +31,7 @@ class DellServerTable(NetBoxTable):
             "model",
             "health",
             "sync_status",
+            "site_confirmed",
             "last_synced",
             "component_count",
             "actions",
@@ -42,6 +44,7 @@ class DellServerTable(NetBoxTable):
             "model",
             "health",
             "sync_status",
+            "site_confirmed",
             "last_synced",
             "component_count",
             "actions",

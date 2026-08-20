@@ -594,6 +594,7 @@ class IdracClient:
                         "part_number": (adapter.get("PartNumber") or "").strip(),
                         "serial": (adapter.get("SerialNumber") or "").strip(),
                         "firmware": firmware,
+                        "numa_node": self._resolve_numa_node(controllers),
                         "ports": self._get_adapter_ports(conn, adapter),
                     }
                 )
@@ -693,6 +694,35 @@ class IdracClient:
                 continue
             lldp[port.get("Id", "")] = (chassis, rport)
         return lldp
+
+    def _resolve_numa_node(self, controllers: list[dict]) -> str:
+        """
+        Return the NUMA node(s) this adapter is wired to, derived from Dell's
+        ``Oem.Dell.CPUAffinity`` (a list of links to
+        ``Processors/CPU.Socket.<n>``, 1-indexed). Dell's socket numbering
+        starts at 1, but NUMA nodes are numbered from 0 (the Linux/numactl
+        convention), so each socket number is decremented by one. For the
+        common single-socket-per-NUMA-node configuration this is exactly the
+        NUMA node; comma-joined when an adapter reports affinity with more
+        than one socket. Empty string when unavailable (e.g. embedded LOMs
+        often don't report affinity) or on an unexpected socket id.
+        """
+        if not controllers:
+            return ""
+        affinity = (
+            (controllers[0].get("Links") or {})
+            .get("Oem", {})
+            .get("Dell", {})
+            .get("CPUAffinity")
+            or []
+        )
+        nodes = []
+        for ref in affinity:
+            path = ref.get("@odata.id", "")
+            socket = path.rsplit("CPU.Socket.", 1)[-1] if "CPU.Socket." in path else ""
+            if socket.isdigit():
+                nodes.append(str(int(socket) - 1))
+        return ",".join(nodes)
 
     def _resolve_adapter_model(self, conn, adapter: dict) -> str:
         """

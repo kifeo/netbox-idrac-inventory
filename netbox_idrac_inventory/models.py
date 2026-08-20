@@ -62,6 +62,15 @@ class DellServer(JobsMixin, NetBoxModel):
         help_text="Detail of the last sync result (error message on failure).",
     )
 
+    site_confirmed = models.BooleanField(
+        default=True,
+        help_text=(
+            "False when this device's site was auto-assigned by discovery "
+            "from the scan range's site and still needs to be confirmed or "
+            "corrected on the Site Review page."
+        ),
+    )
+
     comments = models.TextField(blank=True)
 
     class Meta:
@@ -88,7 +97,10 @@ class DellScanRange(JobsMixin, NetBoxModel):
 
     Running a scan connects to each reachable iDRAC, and either attaches to an
     existing Device matching the service tag or creates a new one, then syncs.
-    Created devices use this range's site and role.
+    Created devices use this range's site and role as a best-effort default —
+    each newly-created device is flagged for review and must have its site
+    confirmed (or corrected) on the Site Review page. A device matched by
+    service tag to an existing Device keeps that device's site unchanged.
     """
 
     name = models.CharField(max_length=128, unique=True)

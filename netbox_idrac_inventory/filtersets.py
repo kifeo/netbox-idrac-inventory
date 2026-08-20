@@ -34,7 +34,7 @@ class DellServerFilterSet(NetBoxModelFilterSet):
         """Django-filters Meta: bind filterset to DellServer."""
 
         model = DellServer
-        fields = ["sync_status", "model"]
+        fields = ["sync_status", "model", "site_confirmed"]
 
     def search(self, queryset, _name, value):
         """Full-text search across key text fields (called for the 'q' filter)."""

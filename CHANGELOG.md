@@ -1,6 +1,33 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.3.0 (unreleased)
+
+### New features
+
+- **Per-server site confirmation**: a scan range's site is now only a
+  best-effort default for newly-discovered devices — each is flagged
+  (`site_confirmed=False`) and listed on a new **Site Review** page
+  (Plugins → iDRAC Inventory → Dell Servers → Site Review) where a human
+  sets or corrects the site individually before it's considered final.
+  Useful when one iDRAC management subnet spans multiple NetBox sites.
+- The server list gained a "Site confirmed" column/filter, and a discovery
+  run's summary now reports how many newly-created devices need review.
+- **NUMA node per network adapter**: the NUMA node a Dell NIC's PCIe lanes
+  are wired to (read from Redfish `Oem.Dell.CPUAffinity`, converted from
+  Dell's 1-indexed CPU socket to a 0-indexed NUMA node) is stored in a new
+  `numa_node` custom field on the adapter's `ModuleBay`, created
+  automatically on first migrate.
+
+### Fixes
+
+- Background jobs (`DellSyncJob`, `DellSyncAllJob`, `DellDiscoveryJob`) now
+  log through the job's own logger, so sync/discovery progress and errors
+  show up on the job's **Log** tab instead of going nowhere.
+- `DellServer` and `DellScanRange` (both `JobsMixin` models) now register a
+  `<model>_jobs` URL, without which NetBox's Job detail page raised
+  `NoReverseMatch` for any of their jobs.
+
+## 0.2.0
 
 ### New features
 

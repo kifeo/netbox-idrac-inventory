@@ -9,7 +9,6 @@ and mark the job as errored.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from netbox.jobs import JobRunner, system_job
@@ -21,8 +20,6 @@ if TYPE_CHECKING:
     from users.models import User
 
     from netbox_idrac_inventory.models import DellScanRange, DellServer
-
-logger = logging.getLogger("netbox.plugins.netbox_idrac_inventory")
 
 
 class DellSyncJob(JobRunner):
@@ -57,9 +54,9 @@ class DellSyncJob(JobRunner):
         """
         server: DellServer = self.job.object
 
-        logger.info("DellSyncJob starting for server %s", server)
+        self.logger.info(f"DellSyncJob starting for server {server}")
 
-        result = sync_server(server, logger=logger)
+        result = sync_server(server, logger=self.logger)
 
         # Surface the summary dict in the job's ``data`` field so component
         # counts show on the job detail page.
@@ -69,9 +66,13 @@ class DellSyncJob(JobRunner):
         except Exception as exc:
             # Non-fatal: the sync itself succeeded; just note we couldn't
             # persist the result dict onto the job record.
-            logger.warning("Could not persist sync result to job data: %s", exc)
+            self.logger.warning(
+                f"Could not persist sync result to job data: {exc}"
+            )
 
-        logger.info("DellSyncJob finished: %s", result.get("message", "done"))
+        self.logger.info(
+            f"DellSyncJob finished: {result.get('message', 'done')}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,7 @@ class DellSyncAllJob(JobRunner):
         for server in DellServer.objects.iterator():
             DellSyncJob.enqueue(instance=server)
             enqueued += 1
-        logger.info("Scheduled Dell sync: enqueued %d sync jobs.", enqueued)
+        self.logger.info(f"Scheduled Dell sync: enqueued {enqueued} sync jobs.")
 
 
 # Register the recurring system job only when an interval is configured. The
@@ -157,7 +158,7 @@ class DellDiscoveryJob(JobRunner):
     def run(self, *args, **kwargs) -> None:
         from netbox_idrac_inventory.idrac.discovery import discover_range
 
-        discover_range(self.job.object, logger=logger)
+        discover_range(self.job.object, logger=self.logger)
 
 
 def enqueue_discovery(scan_range: DellScanRange, user: User | None = None):

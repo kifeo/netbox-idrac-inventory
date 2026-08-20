@@ -54,7 +54,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
     if not scan_range.enabled:
         message = "Scan range is disabled; nothing scanned."
         _record(scan_range, message)
-        _log.info("%s — %s", scan_range, message)
+        _log.info(f"{scan_range} — {message}")
         return {"message": message}
 
     try:
@@ -83,7 +83,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
                 permitted.append(target)
             except ValueError as exc:
                 disallowed += 1
-                _log.warning("Discovery: %s", exc)
+                _log.warning(f"Discovery: {exc}")
         targets = permitted
 
     created = linked = synced = unreachable = failed = skipped = 0
@@ -101,7 +101,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
             net = client.get_idrac_network() if manage_oob else {}
         except Exception as exc:
             unreachable += 1
-            _log.info("Discovery: %s unreachable: %s", ip, exc)
+            _log.info(f"Discovery: {ip} unreachable: {exc}")
             client.close()
             continue
 
@@ -113,6 +113,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
                 Device.objects.filter(serial=service_tag).first()
                 if service_tag else None
             )
+            device_is_new = device is None
             if device:
                 linked += 1
             else:
@@ -134,19 +135,24 @@ def discover_range(scan_range, *, logger=None) -> dict:
                 )
                 created += 1
 
+            defaults = {
+                "idrac_address": ip,
+                "idrac_username": scan_range.idrac_username,
+            }
+            if device_is_new:
+                # New device -> the site came from the range as a
+                # best-effort default and still needs human confirmation.
+                defaults["site_confirmed"] = False
             server, _ = DellServer.objects.get_or_create(
                 device=device,
-                defaults={
-                    "idrac_address": ip,
-                    "idrac_username": scan_range.idrac_username,
-                },
+                defaults=defaults,
             )
             # Reuse the open client for the initial sync.
             sync_server(server, client=client, logger=_log)
             synced += 1
         except Exception as exc:
             failed += 1
-            _log.warning("Discovery: import failed for %s: %s", ip, exc)
+            _log.warning(f"Discovery: import failed for {ip}: {exc}")
         finally:
             client.close()
 
@@ -155,10 +161,12 @@ def discover_range(scan_range, *, logger=None) -> dict:
         f"{synced} synced, {skipped} already managed, {unreachable} "
         f"unreachable, {failed} failed."
     )
+    if created:
+        message += f" {created} new device(s) need site confirmation."
     if disallowed:
         message += f" {disallowed} outside allowed_networks."
     _record(scan_range, message)
-    _log.info("%s — %s", scan_range, message)
+    _log.info(f"{scan_range} — {message}")
     return {
         "created": created,
         "linked": linked,
@@ -167,6 +175,7 @@ def discover_range(scan_range, *, logger=None) -> dict:
         "unreachable": unreachable,
         "failed": failed,
         "disallowed": disallowed,
+        "needs_review": created,
         "message": message,
     }
 

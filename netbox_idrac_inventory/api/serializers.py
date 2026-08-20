@@ -115,6 +115,7 @@ class DellServerSerializer(EncryptedPasswordSerializerMixin, NetBoxModelSerializ
             "sync_status",
             "last_synced",
             "sync_message",
+            "site_confirmed",
             "comments",
             "component_count",
             "tags",

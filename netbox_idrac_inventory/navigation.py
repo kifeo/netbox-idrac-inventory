@@ -34,6 +34,11 @@ menu = PluginMenu(
                         ),
                     ),
                 ),
+                PluginMenuItem(
+                    link="plugins:netbox_idrac_inventory:dellserver_site_review",
+                    link_text="Site Review",
+                    permissions=["netbox_idrac_inventory.change_dellserver"],
+                ),
             ),
         ),
         (

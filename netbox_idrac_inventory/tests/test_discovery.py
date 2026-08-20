@@ -60,6 +60,20 @@ class DiscoverRangeTest(TestCase):
         self.assertEqual(result["created"], 1)
         server = DellServer.objects.get(idrac_address="10.50.0.5")
         self.assertEqual(server.device.name, "disc-host")
+        self.assertFalse(server.site_confirmed)
+
+    def test_new_device_message_notes_review(self):
+        from netbox_idrac_inventory.idrac.discovery import discover_range
+
+        scan = self._range()
+        with patch(
+            "netbox_idrac_inventory.idrac.discovery.IdracClient",
+            return_value=self._fake_client("NEWTAG2"),
+        ), patch("netbox_idrac_inventory.idrac.discovery.sync_server"):
+            result = discover_range(scan)
+
+        self.assertEqual(result["needs_review"], 1)
+        self.assertIn("need site confirmation", result["message"])
 
     def test_links_existing_device_by_service_tag(self):
         from netbox_idrac_inventory.idrac.discovery import discover_range
@@ -82,6 +96,7 @@ class DiscoverRangeTest(TestCase):
         self.assertEqual(result["linked"], 1)
         server = DellServer.objects.get(idrac_address="10.50.0.9")
         self.assertEqual(server.device, existing)
+        self.assertTrue(server.site_confirmed)
 
     def test_skips_already_managed(self):
         from netbox_idrac_inventory.idrac.discovery import discover_range

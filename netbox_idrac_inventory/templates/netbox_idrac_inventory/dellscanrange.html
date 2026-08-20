@@ -26,7 +26,10 @@
           </tr>
           <tr>
             <th scope="row">Site</th>
-            <td>{{ object.site|linkify }}</td>
+            <td>
+              {{ object.site|linkify }}
+              <small class="text-muted d-block">Existing devices (matched by service tag) keep their current site.</small>
+            </td>
           </tr>
           <tr>
             <th scope="row">Role</th>

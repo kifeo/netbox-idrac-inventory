@@ -467,6 +467,7 @@ def _sample_adapters(*, second_port=True):
             "part_number": "0CP610",
             "serial": "VNFCVBA1CC00AJ",
             "firmware": "36.11.73.00",
+            "numa_node": "1",
             "ports": ports,
         }
     ]
@@ -493,6 +494,7 @@ class SyncNetworkAdaptersTest(TestCase):
         mtype = ModuleType.objects.get(model="BRCM 2P 10G SFP 57412S OCP NIC")
         self.assertEqual(mtype.part_number, "0CP610")
         self.assertEqual(module.module_type, mtype)
+        self.assertEqual(bay.custom_field_data.get("numa_node"), "1")
 
         ifaces = Interface.objects.filter(device=device)
         self.assertEqual(ifaces.count(), 2)

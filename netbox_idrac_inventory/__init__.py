@@ -1,6 +1,6 @@
 from netbox.plugins import PluginConfig
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 class DellInventoryConfig(PluginConfig):
@@ -43,12 +43,14 @@ class DellInventoryConfig(PluginConfig):
         super().ready()
         from django.db.models.signals import post_migrate
 
-        from .signals import create_lldp_custom_fields
+        from .signals import create_lldp_custom_fields, create_module_bay_custom_fields
 
-        # Create the LLDP custom fields after migrations. Done via post_migrate
-        # (idempotent get_or_create) rather than a data migration so it stays
-        # robust across NetBox versions instead of pinning a core migration.
+        # Create the LLDP/NUMA custom fields after migrations. Done via
+        # post_migrate (idempotent get_or_create) rather than a data
+        # migration so it stays robust across NetBox versions instead of
+        # pinning a core migration.
         post_migrate.connect(create_lldp_custom_fields, sender=self)
+        post_migrate.connect(create_module_bay_custom_fields, sender=self)
 
         # Import jobs so the recurring system job registers itself (NetBox
         # does not auto-import a plugin's jobs module). The rqworker schedules

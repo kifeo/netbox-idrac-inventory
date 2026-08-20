@@ -8,16 +8,21 @@ URL names follow the NetBox 4.x plugin convention:
   <model>_delete    -> delete view (pk)
   <model>_bulk_delete -> bulk delete
   <model>_changelog -> object changelog (pk)
+  <model>_jobs      -> object jobs tab (pk); only for JobsMixin models
+                       (DellServer, DellScanRange)
 
 All names are within the "netbox_idrac_inventory" namespace so they are
 accessed as "plugins:netbox_idrac_inventory:<name>" from Python code.
 
-Note: ObjectChangeLogView is the standard NetBox generic view for changelogs.
-It expects a `model` kwarg; we pass it via path() defaults dict.
+Note: ObjectChangeLogView/ObjectJobsView are the standard NetBox generic
+views for changelogs/jobs. Both expect a `model` kwarg; we pass it via
+path() defaults dict. NetBox core's JobView breadcrumb reverses
+"<app>:<model>_jobs" for any JobsMixin model, so this route is required
+(not just a nice-to-have) for the Job detail page to render without error.
 """
 
 from django.urls import path
-from netbox.views.generic import ObjectChangeLogView
+from netbox.views.generic import ObjectChangeLogView, ObjectJobsView
 
 from .models import DellComponent, DellScanRange, DellServer
 from .views import (
@@ -37,6 +42,7 @@ from .views import (
     DellServerDeleteView,
     DellServerEditView,
     DellServerListView,
+    DellServerSiteReviewView,
     DellServerSyncView,
     DellServerView,
 )
@@ -54,6 +60,11 @@ urlpatterns = [
         "servers/add/",
         DellServerEditView.as_view(),
         name="dellserver_add",
+    ),
+    path(
+        "servers/review/",
+        DellServerSiteReviewView.as_view(),
+        name="dellserver_site_review",
     ),
     path(
         "servers/<int:pk>/",
@@ -79,6 +90,12 @@ urlpatterns = [
         "servers/<int:pk>/changelog/",
         ObjectChangeLogView.as_view(),
         name="dellserver_changelog",
+        kwargs={"model": DellServer},
+    ),
+    path(
+        "servers/<int:pk>/jobs/",
+        ObjectJobsView.as_view(),
+        name="dellserver_jobs",
         kwargs={"model": DellServer},
     ),
     path(
@@ -167,6 +184,12 @@ urlpatterns = [
         "scan-ranges/<int:pk>/changelog/",
         ObjectChangeLogView.as_view(),
         name="dellscanrange_changelog",
+        kwargs={"model": DellScanRange},
+    ),
+    path(
+        "scan-ranges/<int:pk>/jobs/",
+        ObjectJobsView.as_view(),
+        name="dellscanrange_jobs",
         kwargs={"model": DellScanRange},
     ),
     path(
