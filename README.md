@@ -22,8 +22,8 @@ interface via the Redfish API.
   `iDRAC` interface (with its MAC), the iDRAC IPv4 is created in IPAM and set
   as the device's **out-of-band IP** (`oob_ip`).
 - **Native network modelling** — each physical network adapter is created as a
-  NetBox `Module` (with a matching `ModuleType`) installed in a `ModuleBay` on
-  the device, and each physical port becomes an `Interface` with its MAC
+  NetBox `Module` (with a matching `ModuleType`) installed in the device's
+  `ModuleBay` for its slot, and each physical port becomes an `Interface` with its MAC
   address and link speed. Ports are matched to an existing interface by MAC
   address first, falling back to name — so a device that already had
   interfaces before being onboarded (under whatever names/cables were there
@@ -32,6 +32,12 @@ interface via the Redfish API.
   lanes are wired to (from Dell's `CPUAffinity`, converted from Dell's
   1-indexed CPU socket to a 0-indexed NUMA node) is stored in the
   `numa_node` custom field on the `ModuleBay`.
+- **Module bays from the device type** — every module bay the Dell model's
+  device type defines is created on the device, including empty slots you can
+  fill by hand. An adapter goes into the bay whose `position` matches its slot
+  (`NIC.Slot.2` → `PCIe-2`, `PCIe-Gen3-2`, `PCIE2` or `slot-2`;
+  `NIC.Integrated.1` → `inic-1`, `NDC-1` or `OCP-1`; `NIC.Embedded.1` →
+  `enic-1`); without a matching bay it gets one named after its FQDD.
 - **LLDP discovery** — the LLDP neighbour reported by iDRAC for each connected
   port (remote switch + remote port) is stored in the `lldp_remote_chassis`
   and `lldp_remote_port` custom fields on the interface. These, and
@@ -66,7 +72,8 @@ interface via the Redfish API.
 
 | Plugin version | NetBox version |
 |----------------|---------------|
-| 0.2.x          | 4.1 – 4.6     |
+| 0.3.6+         | 4.1 – 4.7     |
+| 0.2.x – 0.3.5  | 4.1 – 4.6     |
 | 0.1.x          | 4.1 or later  |
 
 NetBox 4.6+ requires `API_TOKEN_PEPPERS` in your NetBox configuration (a

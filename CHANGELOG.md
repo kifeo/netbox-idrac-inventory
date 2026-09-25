@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.3.6 (unreleased)
+
+### Compatibility
+
+- Declared compatibility extended to NetBox 4.7 (`max_version = "4.7.99"`),
+  verified by running the full suite on v4.7.1. v4.7.1 added to the CI matrix;
+  the dev stack now defaults to NetBox 4.7.
+
+### Features
+
+- **Network adapters go into the Dell model's module bays.** The sync now
+  creates the device type's module bays on the device (NetBox only does it at
+  device creation), so every slot of the model exists — empty ones included,
+  for a card entered by hand. Each adapter is placed in the bay for its slot,
+  matched on the bay `position` from the netbox-community devicetype-library
+  conventions: `NIC.Slot.N` → `PCIe-N` / `PCIe-GenX-N` / `PCIEN` / `slot-N`,
+  `NIC.Integrated.N` → `inic-N`, then `NDC-N`, then `OCP-N`,
+  `NIC.Embedded.N` → `enic-N`. No match (or an ambiguous one) keeps the
+  previous FQDD-named bay (`NIC.Slot.N`).
+- Devices synced by an earlier version are migrated: the module is **moved**
+  from its `NIC.*` bay into the model bay, so its interfaces keep their cables
+  and IP addresses, and the `NIC.*` bay is removed.
+- A hand-entered module already in the model bay is replaced when none of its
+  interfaces carries a cable or an IP (its template interfaces, e.g. `eno1`,
+  go with it); otherwise it is kept and the adapter stays in an `NIC.*` bay,
+  with a warning.
+- When an adapter is removed, its module is removed from the model bay but the
+  bay itself stays (it belongs to the model). Hand-entered modules are never
+  removed.
+
+### Fixes
+
+- **A port or adapter that could not be read is no longer taken for removed
+  hardware.** A transient error while reading one port (a DNS hiccup was
+  seen) made the sync delete that port's interface, with its cable and IP
+  assignments. The client now reports whether each adapter's port list, and
+  the adapter list itself, were read completely; the sync only removes
+  interfaces, modules or bays after a complete read.
+- **A sync that overruns the RQ job timeout is no longer reported as
+  "synced"**: RQ enforces its timeout by raising `JobTimeoutException` (an
+  `Exception` subclass) wherever the code is, and the iDRAC getters catch
+  `Exception` to tolerate partial data — so the timeout was swallowed and the
+  server ended up `synced` with some components silently missing (seen on an
+  iDRAC8 R630 whose network adapters never made it). The job now marks the
+  server `failed` with an explicit message when it hit the timeout.
+- **Sync jobs get a longer RQ timeout**, set by the new `sync_job_timeout`
+  setting (default 1200s, instead of NetBox's `RQ_DEFAULT_TIMEOUT` of 300s).
+  Older iDRACs answer each Redfish call in 2–30s; a full sync of a server
+  with three network adapters took 5 to 11 minutes on an iDRAC8. Applies to
+  on-demand syncs and to the recurring fleet sync.
+
 ## 0.3.5 (unreleased)
 
 ### Fixes

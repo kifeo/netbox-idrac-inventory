@@ -553,6 +553,9 @@ class IdracClient:
         LLDP fields come back as "".
         """
         results: list[dict] = []
+        # False when an adapter list/fetch failed: the result is then partial
+        # and a missing adapter must not be taken for a removed one.
+        self.network_adapters_complete = True
         try:
             # The raw JSON connector lives on a resource, not on the Sushy
             # root object (which has no .get); reuse the System's connector.
@@ -560,6 +563,7 @@ class IdracClient:
             chassis_list = self._conn.get_chassis_collection().get_members()
         except Exception as exc:
             log.warning("get_network_adapters: no chassis collection: %s", exc)
+            self.network_adapters_complete = False
             return results
 
         for chassis in chassis_list:
@@ -571,6 +575,7 @@ class IdracClient:
                 adapters = conn.get(path=na_link).json().get("Members", [])
             except Exception as exc:
                 log.warning("get_network_adapters: list failed: %s", exc)
+                self.network_adapters_complete = False
                 continue
 
             for ref in adapters:
@@ -581,6 +586,7 @@ class IdracClient:
                     adapter = conn.get(path=a_path).json()
                 except Exception as exc:
                     log.warning("get_network_adapters: %s failed: %s", a_path, exc)
+                    self.network_adapters_complete = False
                     continue
 
                 # Firmware lives on the first controller, when present.
@@ -601,24 +607,30 @@ class IdracClient:
                         "serial": (adapter.get("SerialNumber") or "").strip(),
                         "firmware": firmware,
                         "numa_node": self._resolve_numa_node(controllers),
-                        "ports": self._get_adapter_ports(conn, adapter),
+                        **self._get_adapter_ports(conn, adapter),
                     }
                 )
 
         return results
 
-    def _get_adapter_ports(self, conn, adapter: dict) -> list[dict]:
-        """Return the physical port dicts for one network adapter."""
+    def _get_adapter_ports(self, conn, adapter: dict) -> dict:
+        """
+        Return ``{"ports": [...], "ports_complete": bool}`` for one network
+        adapter. ``ports_complete`` is False when a port could not be read
+        (e.g. a transient DNS or HTTP error), so the caller does not mistake
+        an unread port for a removed one.
+        """
         ports: list[dict] = []
         ports_link = adapter.get("NetworkPorts") or adapter.get("Ports") or {}
         ports_link = ports_link.get("@odata.id") if isinstance(ports_link, dict) else None
         if not ports_link:
-            return ports
+            return {"ports": ports, "ports_complete": True}
         try:
             members = conn.get(path=ports_link).json().get("Members", [])
         except Exception as exc:
             log.warning("_get_adapter_ports: list failed: %s", exc)
-            return ports
+            return {"ports": ports, "ports_complete": False}
+        complete = True
 
         # The modern Redfish /Ports resource carries the LLDP neighbour under
         # Ethernet.LLDPReceive. Build the map once per adapter; empty when no
@@ -637,6 +649,7 @@ class IdracClient:
                 port = conn.get(path=p_path).json()
             except Exception as exc:
                 log.warning("_get_adapter_ports: %s failed: %s", p_path, exc)
+                complete = False
                 continue
 
             macs = port.get("AssociatedNetworkAddresses") or []
@@ -665,7 +678,7 @@ class IdracClient:
                     "lldp_remote_port": rport,
                 }
             )
-        return ports
+        return {"ports": ports, "ports_complete": complete}
 
     def _get_lldp_map_from_ports(self, conn, ports_link: str) -> dict:
         """

@@ -539,6 +539,59 @@ class DellSyncAllJobTest(TestCase):
         self.assertEqual(enqueued, {server_a, server_b})
 
 
+class DellSyncJobTimeoutTest(TestCase):
+    """Sync jobs get a longer RQ timeout, and overrunning it is not 'synced'."""
+
+    def test_enqueue_sync_passes_the_configured_job_timeout(self):
+        from netbox_idrac_inventory.jobs import enqueue_sync
+
+        server = _make_server(name="timeout-enq", idrac="10.0.9.10")
+        with patch(
+            "netbox_idrac_inventory.jobs.DellSyncJob.enqueue"
+        ) as mock_enqueue:
+            enqueue_sync(server)
+        self.assertEqual(mock_enqueue.call_args.kwargs["job_timeout"], 1200)
+
+    def _run_job(self, server, *, elapsed):
+        from netbox_idrac_inventory.jobs import DellSyncJob
+
+        job = MagicMock()
+        job.object = server
+        with patch(
+            "netbox_idrac_inventory.jobs.sync_server",
+            return_value={"message": "ok"},
+        ), patch(
+            "netbox_idrac_inventory.jobs.get_current_job",
+            return_value=MagicMock(timeout=900),
+        ), patch(
+            "netbox_idrac_inventory.jobs.time.monotonic",
+            side_effect=[0.0, elapsed],
+        ):
+            DellSyncJob(job).run()
+
+    def test_sync_that_overran_the_job_timeout_is_marked_failed(self):
+        server = _make_server(name="timeout-over", idrac="10.0.9.11")
+        server.sync_status = SyncStatusChoices.STATUS_SYNCED
+        server.save()
+
+        with self.assertRaises(TimeoutError):
+            self._run_job(server, elapsed=905.0)
+
+        server.refresh_from_db()
+        self.assertEqual(server.sync_status, SyncStatusChoices.STATUS_FAILED)
+        self.assertIn("900s job timeout", server.sync_message)
+
+    def test_sync_within_the_job_timeout_is_left_alone(self):
+        server = _make_server(name="timeout-ok", idrac="10.0.9.12")
+        server.sync_status = SyncStatusChoices.STATUS_SYNCED
+        server.save()
+
+        self._run_job(server, elapsed=135.0)
+
+        server.refresh_from_db()
+        self.assertEqual(server.sync_status, SyncStatusChoices.STATUS_SYNCED)
+
+
 class SyncFirmwareInventoryTest(TestCase):
     """UpdateService firmware versions enrich matching components by FQDD."""
 
@@ -871,3 +924,253 @@ class SyncNetworkAdaptersTest(TestCase):
                 device=server.device, name="NIC.Integrated.1"
             ).exists()
         )
+
+
+def _slot_adapter(fqdd: str, mac_prefix: str = "AA:BB:CC:DD:EE"):
+    """One 2-port adapter named *fqdd* (e.g. "NIC.Slot.2")."""
+    return {
+        "name": fqdd,
+        "manufacturer": "Intel",
+        "model": "Intel(R) GbE 4P I350-t Adapter",
+        "part_number": "",
+        "serial": f"SER-{fqdd}",
+        "firmware": "",
+        "numa_node": "",
+        "ports": [
+            {
+                "name": f"{fqdd}-{n}",
+                "mac_address": f"{mac_prefix}:0{n}",
+                "link_status": "Up",
+                "speed_mbps": 1000,
+                "lldp_remote_chassis": "",
+                "lldp_remote_port": "",
+            }
+            for n in (1, 2)
+        ],
+    }
+
+
+class SyncDeviceTypeModuleBaysTest(TestCase):
+    """Adapters go into the Dell model's module bays; empty bays are kept."""
+
+    def _server_on_typed_device(self, name: str):
+        from dcim.models import DeviceType, Manufacturer, ModuleBayTemplate
+
+        server = _make_server(name=name)
+        # The type the sync resolves the fake client's model to.
+        mfr, _ = Manufacturer.objects.get_or_create(name="Dell", slug="dell")
+        dtype, _ = DeviceType.objects.get_or_create(
+            manufacturer=mfr, model="PowerEdge R640",
+            defaults={"slug": "poweredge-r640"},
+        )
+        for bay_name, position in (
+            ("Network Daughter Card slot 1", "NDC-1"),
+            ("PCIe-Gen3 1", "PCIE1"),
+            ("PCIe-Gen3 2", "PCIE2"),
+        ):
+            ModuleBayTemplate.objects.get_or_create(
+                device_type=dtype, name=bay_name, defaults={"position": position}
+            )
+        return server, dtype
+
+    def _bays(self, device):
+        from dcim.models import ModuleBay
+
+        return {
+            bay.name: (bay.installed_module.module_type.model
+                       if getattr(bay, "installed_module", None) else None)
+            for bay in ModuleBay.objects.filter(device=device)
+        }
+
+    def test_adapter_fills_the_model_bay_and_empty_bays_exist(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server, _ = self._server_on_typed_device("bays-01")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.2")]))
+
+        self.assertEqual(self._bays(server.device), {
+            "Network Daughter Card slot 1": None,
+            "PCIe-Gen3 1": None,
+            "PCIe-Gen3 2": "Intel(R) GbE 4P I350-t Adapter",
+        })
+
+    def test_integrated_nic_goes_to_the_ndc_bay(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server, _ = self._server_on_typed_device("bays-02")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Integrated.1")]))
+
+        self.assertEqual(
+            self._bays(server.device)["Network Daughter Card slot 1"],
+            "Intel(R) GbE 4P I350-t Adapter",
+        )
+        self.assertNotIn("NIC.Integrated.1", self._bays(server.device))
+
+    def test_adapter_without_a_model_bay_keeps_a_plugin_bay(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server, _ = self._server_on_typed_device("bays-03")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.7")]))
+
+        self.assertEqual(
+            self._bays(server.device)["NIC.Slot.7"],
+            "Intel(R) GbE 4P I350-t Adapter",
+        )
+
+    def test_module_from_a_plugin_bay_moves_with_its_ip(self):
+        """Devices synced before device-type bays existed: the module moves
+        into the model bay and its interfaces keep their IPs."""
+        from dcim.models import Interface, ModuleBay
+        from ipam.models import IPAddress
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="bays-04")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+        self.assertTrue(
+            ModuleBay.objects.filter(device=server.device, name="NIC.Slot.1").exists()
+        )
+        iface = Interface.objects.get(device=server.device, name="NIC.Slot.1-1")
+        ip = IPAddress.objects.create(address="192.0.2.10/24", assigned_object=iface)
+
+        # The type now defines its bays.
+        _, dtype = self._server_on_typed_device("bays-04-type")
+        server.device.device_type = dtype
+        server.device.save()
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+
+        bays = self._bays(server.device)
+        self.assertNotIn("NIC.Slot.1", bays)
+        self.assertEqual(bays["PCIe-Gen3 1"], "Intel(R) GbE 4P I350-t Adapter")
+        ip.refresh_from_db()
+        self.assertEqual(ip.assigned_object_id, iface.pk)
+        iface.refresh_from_db()
+        self.assertEqual(iface.module.module_bay.name, "PCIe-Gen3 1")
+
+    def test_hand_entered_module_without_data_is_replaced(self):
+        from dcim.models import Module, ModuleBay, ModuleType
+
+        from netbox_idrac_inventory.idrac.sync import _ensure_template_bays, sync_server
+
+        server, dtype = self._server_on_typed_device("bays-05")
+        server.device.device_type = dtype
+        server.device.save()
+        _ensure_template_bays(server.device, logging.getLogger(__name__))
+        bay = ModuleBay.objects.get(device=server.device, name="PCIe-Gen3 1")
+        manual_type = ModuleType.objects.create(
+            manufacturer=dtype.manufacturer, model="Hand-entered card")
+        Module.objects.create(device=server.device, module_bay=bay,
+                              module_type=manual_type)
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+
+        self.assertEqual(self._bays(server.device)["PCIe-Gen3 1"],
+                         "Intel(R) GbE 4P I350-t Adapter")
+
+    def test_hand_entered_module_with_an_ip_is_kept(self):
+        from dcim.models import Interface, Module, ModuleBay, ModuleType
+        from ipam.models import IPAddress
+
+        from netbox_idrac_inventory.idrac.sync import _ensure_template_bays, sync_server
+
+        server, dtype = self._server_on_typed_device("bays-06")
+        server.device.device_type = dtype
+        server.device.save()
+        _ensure_template_bays(server.device, logging.getLogger(__name__))
+        bay = ModuleBay.objects.get(device=server.device, name="PCIe-Gen3 1")
+        manual_type = ModuleType.objects.create(
+            manufacturer=dtype.manufacturer, model="Hand-entered card")
+        module = Module.objects.create(device=server.device, module_bay=bay,
+                                       module_type=manual_type)
+        iface = Interface.objects.create(device=server.device, module=module,
+                                         name="manual0", type="1000base-t")
+        IPAddress.objects.create(address="192.0.2.20/24", assigned_object=iface)
+
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+
+        bays = self._bays(server.device)
+        self.assertEqual(bays["PCIe-Gen3 1"], "Hand-entered card")
+        self.assertEqual(bays["NIC.Slot.1"], "Intel(R) GbE 4P I350-t Adapter")
+
+    def test_removed_adapter_empties_the_model_bay_but_keeps_it(self):
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server, _ = self._server_on_typed_device("bays-07")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1"),
+                              _slot_adapter("NIC.Slot.2", "AA:BB:CC:DD:EF")]))
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.2", "AA:BB:CC:DD:EF")]))
+
+        bays = self._bays(server.device)
+        self.assertIsNone(bays["PCIe-Gen3 1"])
+        self.assertEqual(bays["PCIe-Gen3 2"], "Intel(R) GbE 4P I350-t Adapter")
+
+
+class SyncPartialNetworkReadTest(TestCase):
+    """An iDRAC read error must not be mistaken for removed hardware."""
+
+    def test_unread_port_keeps_its_interface(self):
+        from dcim.models import Interface
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="partial-01")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+        self.assertEqual(
+            Interface.objects.filter(device=server.device, name__startswith="NIC.").count(), 2
+        )
+
+        # Port 2 could not be read this time (e.g. transient DNS failure).
+        partial = _slot_adapter("NIC.Slot.1")
+        partial["ports"] = partial["ports"][:1]
+        partial["ports_complete"] = False
+        sync_server(server, client=_make_fake_client(network_adapters=[partial]))
+
+        self.assertTrue(
+            Interface.objects.filter(device=server.device, name="NIC.Slot.1-2").exists()
+        )
+
+    def test_really_removed_port_is_still_deleted(self):
+        from dcim.models import Interface
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="partial-02")
+        sync_server(server, client=_make_fake_client(
+            network_adapters=[_slot_adapter("NIC.Slot.1")]))
+        complete = _slot_adapter("NIC.Slot.1")
+        complete["ports"] = complete["ports"][:1]
+        complete["ports_complete"] = True
+        sync_server(server, client=_make_fake_client(network_adapters=[complete]))
+
+        self.assertFalse(
+            Interface.objects.filter(device=server.device, name="NIC.Slot.1-2").exists()
+        )
+
+    def test_unread_adapter_keeps_its_module(self):
+        from dcim.models import ModuleBay
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="partial-03")
+        sync_server(server, client=_make_fake_client(network_adapters=[
+            _slot_adapter("NIC.Slot.1"),
+            _slot_adapter("NIC.Slot.2", "AA:BB:CC:DD:EF"),
+        ]))
+
+        # NIC.Slot.2 failed to read: the client flags the list as partial.
+        fake = _make_fake_client(network_adapters=[_slot_adapter("NIC.Slot.1")])
+        fake.network_adapters_complete = False
+        sync_server(server, client=fake)
+
+        bay = ModuleBay.objects.get(device=server.device, name="NIC.Slot.2")
+        self.assertIsNotNone(getattr(bay, "installed_module", None))

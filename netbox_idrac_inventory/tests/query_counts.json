@@ -1,4 +1,6 @@
 {
-  "dellcomponent:api_list_objects": 14,
-  "dellserver:api_list_objects": 14
+  "dellcomponent@4.6:api_list_objects": 14,
+  "dellcomponent@4.7:api_list_objects": 13,
+  "dellserver@4.6:api_list_objects": 14,
+  "dellserver@4.7:api_list_objects": 13
 }

@@ -25,12 +25,24 @@
 from unittest.mock import MagicMock, patch
 
 from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+from django.conf import settings
 from django.test import TestCase
 from django.urls import reverse
 from utilities.testing import APITestCase, APIViewTestCases
 
 from netbox_idrac_inventory.choices import ComponentTypeChoices
 from netbox_idrac_inventory.models import DellComponent, DellServer
+
+# NetBox's query-count baseline (tests/query_counts.json) is a single file,
+# but the list endpoint's query count comes from NetBox core and changes
+# between releases (4.7 does one query fewer than 4.6). Key the baseline by
+# NetBox minor version so the whole CI matrix can pass.
+_NETBOX_MINOR = ".".join(settings.RELEASE.version.split(".")[:2])
+
+
+def _query_count_label(model_name: str) -> str:
+    return f"{model_name}@{_NETBOX_MINOR}"
+
 
 # ---------------------------------------------------------------------------
 # Shared fixture helpers
@@ -75,6 +87,7 @@ class DellServerAPITestCase(
     """Tests for the DellServer REST API endpoints."""
 
     model = DellServer
+    query_count_model_label = _query_count_label("dellserver")
     # APIViewTestCases builds the viewname as "{view_namespace}-api:...".
     # For a plugin the namespace must include the "plugins-api:" prefix.
     view_namespace = "plugins-api:netbox_idrac_inventory"
@@ -142,6 +155,7 @@ class DellComponentAPITestCase(
     """Tests for the DellComponent REST API endpoints."""
 
     model = DellComponent
+    query_count_model_label = _query_count_label("dellcomponent")
     view_namespace = "plugins-api:netbox_idrac_inventory"
 
     # Fields expected in a brief (?brief=true) list response.

@@ -47,7 +47,7 @@ services:
       context: ..
       dockerfile: dev/Dockerfile
       args:
-        VERSION: ${NETBOX_VERSION:-v4.6}
+        VERSION: ${NETBOX_VERSION:-v4.7}
     depends_on:
       postgres:
         condition: service_healthy

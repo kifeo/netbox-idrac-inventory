@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -46,9 +47,26 @@ PLUGIN_NAME = "netbox_idrac_inventory"
 CF_LLDP_CHASSIS = "lldp_remote_chassis"
 CF_LLDP_PORT = "lldp_remote_port"
 
-# Module bays the plugin manages are named after the Dell adapter FQDD, which
-# always starts with this prefix; used to scope reconciliation/deletion.
+# Module bays the plugin creates itself (when the device type has no matching
+# bay) are named after the Dell adapter FQDD, which always starts with this
+# prefix; used to scope reconciliation/deletion. Ports keep FQDD names too.
 _NIC_BAY_PREFIX = "NIC."
+
+# Dell adapter FQDD (NIC.Slot.2, NIC.Integrated.1, NIC.Embedded.1) -> the
+# ``position`` of the device-type module bay that houses it. Positions follow
+# the netbox-community devicetype-library conventions seen on Dell types:
+# PCIe-2, PCIe-Gen3-2, PCIE2, slot-2 / NDC-1, inic-1, OCP-1 / enic-1. Within
+# one FQDD kind, earlier patterns win when a type has several candidates.
+_FQDD_RE = re.compile(r"^NIC\.(Slot|Integrated|Embedded)\.(\d+)$", re.IGNORECASE)
+_BAY_POSITION_PATTERNS = {
+    "slot": [re.compile(r"^(?:pcie(?:-gen\d+)?|slot)[-_ ]?(\d+)$", re.IGNORECASE)],
+    "integrated": [
+        re.compile(r"^inic[-_ ]?(\d+)$", re.IGNORECASE),
+        re.compile(r"^ndc[-_ ]?(\d+)$", re.IGNORECASE),
+        re.compile(r"^ocp[-_ ]?(\d+)$", re.IGNORECASE),
+    ],
+    "embedded": [re.compile(r"^enic[-_ ]?(\d+)$", re.IGNORECASE)],
+}
 
 
 def _config(key: str):
@@ -370,10 +388,175 @@ def _sync_interface(device, module, port: dict, iface_ct, _log) -> bool:
     return True
 
 
+def _ensure_template_bays(device, _log) -> int:
+    """
+    Create the device-type module bays missing from *device*.
+
+    NetBox only instantiates a device type's module-bay templates when the
+    device is created, so bays added to the type later -- or a device whose
+    type was set by the sync after creation -- would otherwise never get
+    them. Every slot of the Dell model then exists, empty when iDRAC reports
+    nothing in it, so a user can still fill it by hand (e.g. a RAID card).
+    Returns the number of bays created.
+    """
+    from dcim.models import ModuleBay, ModuleBayTemplate
+
+    existing = set(
+        ModuleBay.objects.filter(device=device).values_list("name", flat=True)
+    )
+    created = 0
+    templates = ModuleBayTemplate.objects.filter(
+        device_type=device.device_type_id
+    )
+    for template in templates:
+        bay = template.instantiate(device=device)
+        if bay.name in existing:
+            continue
+        bay.save()
+        existing.add(bay.name)
+        created += 1
+    if created:
+        _log.info(
+            f"Created {created} module bay(s) on {device} from device type "
+            f"'{device.device_type}'."
+        )
+    return created
+
+
+def _template_bay_for_fqdd(device, fqdd: str):
+    """
+    Return the device's non-plugin module bay that houses the adapter
+    *fqdd*, matched on the bay ``position`` (see _BAY_POSITION_PATTERNS), or
+    ``None`` when the device type has no such bay or the match is ambiguous.
+    """
+    from dcim.models import ModuleBay
+
+    match = _FQDD_RE.match(fqdd or "")
+    if not match:
+        return None
+    kind, number = match.group(1).lower(), int(match.group(2))
+
+    bays = list(
+        ModuleBay.objects.filter(
+            device=device, installed_module__isnull=True
+        ).exclude(
+            name__startswith=_NIC_BAY_PREFIX
+        )
+    )
+    for pattern in _BAY_POSITION_PATTERNS[kind]:
+        candidates = [
+            bay
+            for bay in bays
+            if (m := pattern.match((bay.position or "").strip()))
+            and int(m.group(1)) == number
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            return None  # ambiguous: leave it to a plugin-named bay
+    return None
+
+
+def _is_plugin_module(module) -> bool:
+    """A module the sync put in place carries FQDD-named ports (NIC.*)."""
+    return module.interfaces.filter(name__startswith=_NIC_BAY_PREFIX).exists()
+
+
+def _module_holds_data(module) -> bool:
+    """True when any interface of *module* has a cable or an IP address."""
+    from dcim.models import Interface
+
+    return (
+        Interface.objects.filter(module=module)
+        .filter(cable__isnull=False)
+        .exists()
+        or any(iface.ip_addresses.exists() for iface in module.interfaces.all())
+    )
+
+
+def _bay_for_adapter(device, fqdd: str, _log):
+    """
+    Pick the bay for adapter *fqdd*: the device-type bay for that slot when
+    the device has one, else a plugin bay named after the FQDD.
+
+    A hand-entered module already sitting in the device-type bay is replaced
+    when none of its interfaces carries a cable or an IP; otherwise the bay
+    is left alone and the adapter goes to a plugin bay, with a warning.
+    """
+    from dcim.models import Module, ModuleBay
+
+    # The bay may already hold this adapter from a previous sync.
+    current = (
+        Module.objects.filter(device=device, module_bay__isnull=False)
+        .select_related("module_bay")
+        .filter(interfaces__name__startswith=f"{fqdd}-")
+        .distinct()
+        .first()
+    )
+    if current and not current.module_bay.name.startswith(_NIC_BAY_PREFIX):
+        return current.module_bay
+
+    target = _template_bay_for_fqdd(device, fqdd)
+    if target is None:
+        # Occupied device-type bay (a hand-entered module)?
+        match = _FQDD_RE.match(fqdd or "")
+        occupied = []
+        if match:
+            kind, number = match.group(1).lower(), int(match.group(2))
+            for pattern in _BAY_POSITION_PATTERNS[kind]:
+                occupied = [
+                    bay
+                    for bay in ModuleBay.objects.filter(
+                        device=device, installed_module__isnull=False
+                    ).exclude(name__startswith=_NIC_BAY_PREFIX)
+                    if (m := pattern.match((bay.position or "").strip()))
+                    and int(m.group(1)) == number
+                ]
+                if occupied:
+                    break
+        if len(occupied) == 1:
+            bay = occupied[0]
+            occupant = bay.installed_module
+            if _is_plugin_module(occupant) or _module_holds_data(occupant):
+                _log.warning(
+                    f"Module bay '{bay.name}' on {device} already holds "
+                    f"'{occupant}' with cabled/addressed interfaces; keeping "
+                    f"it and syncing {fqdd} into a separate bay."
+                )
+            else:
+                _log.info(
+                    f"Replacing hand-entered module '{occupant}' in "
+                    f"'{bay.name}' on {device} by the adapter iDRAC reports "
+                    f"there ({fqdd})."
+                )
+                occupant.delete()
+                bay.refresh_from_db()
+                target = bay
+
+    if target is not None:
+        # Move a module a previous sync left in a plugin-named bay, so its
+        # interfaces (cables, IPs) come along instead of being recreated.
+        if current is not None:
+            current.module_bay = target
+            current.save()
+            _log.info(
+                f"Moved {fqdd} on {device} into device-type bay "
+                f"'{target.name}'."
+            )
+        return target
+
+    bay, _ = ModuleBay.objects.get_or_create(device=device, name=fqdd)
+    return bay
+
+
 def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
     """
     Model each Dell network adapter as a NetBox ``Module`` in a ``ModuleBay``
     on the device, and each physical port as an ``Interface`` (MAC + LLDP).
+
+    The module goes into the device-type bay for its slot when the type
+    defines one (see _bay_for_adapter), else into a bay named after the
+    adapter FQDD.
 
     Returns ``(modules_synced, interfaces_synced)``.
     """
@@ -392,13 +575,12 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
         return 0, 0
 
     modules_synced = interfaces_synced = 0
-    desired_bays: set[str] = set()
+    desired_bays: set[int] = set()
 
     for adapter in adapters:
         name = adapter.get("name")
         if not name:
             continue
-        desired_bays.add(name)
 
         mtype, _ = ModuleType.objects.get_or_create(
             manufacturer=get_or_create_manufacturer(
@@ -414,7 +596,8 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
             mtype.part_number = part_number
             mtype.save(update_fields=["part_number"])
 
-        bay, _ = ModuleBay.objects.get_or_create(device=device, name=name)
+        bay = _bay_for_adapter(device, name, _log)
+        desired_bays.add(bay.pk)
         numa_node = adapter.get("numa_node", "")
         if bay.custom_field_data.get("numa_node") != numa_node:
             bay.custom_field_data["numa_node"] = numa_node
@@ -441,9 +624,9 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
 
         # Drop interfaces on this module the adapter no longer reports.
         # Deleting an interface also removes its cable and IP assignments,
-        # so skip when the adapter reported no ports at all (likely a
-        # transient failure) and log what is removed.
-        if desired_ports:
+        # so skip when the adapter reported no ports at all or when a port
+        # could not be read (a transient failure, not a removed port).
+        if desired_ports and adapter.get("ports_complete", True):
             stale_ifaces = Interface.objects.filter(module=module).exclude(
                 name__in=desired_ports
             )
@@ -455,18 +638,35 @@ def _sync_network_adapters(server, client, _log) -> tuple[int, int]:
                 )
                 iface.delete()
 
-    # Drop plugin-managed bays (with their modules/interfaces) for adapters
-    # that are gone.
-    stale_bays = ModuleBay.objects.filter(
-        device=device, name__startswith=_NIC_BAY_PREFIX
-    ).exclude(name__in=desired_bays)
-    for bay in stale_bays:
+    # An adapter that could not be read is not a removed adapter: skip the
+    # cleanup rather than delete modules (and their cables/IPs) on a partial
+    # read. ``is False`` so a client without the attribute counts as complete.
+    if getattr(client, "network_adapters_complete", True) is False:
         _log.warning(
-            f"Removing module bay '{bay.name}' on {device}: adapter no "
-            "longer reported by iDRAC."
+            f"Network adapter inventory of {device} is partial (iDRAC read "
+            "errors); not removing any module this time."
         )
-        Module.objects.filter(module_bay=bay).delete()
-        bay.delete()
+        return modules_synced, interfaces_synced
+
+    # Adapters that are gone: drop plugin-named bays with their module, and
+    # empty device-type bays of the modules the sync had put there (the bay
+    # itself belongs to the model and stays). Hand-entered modules are kept.
+    for bay in ModuleBay.objects.filter(device=device).exclude(pk__in=desired_bays):
+        module = Module.objects.filter(module_bay=bay).first()
+        if bay.name.startswith(_NIC_BAY_PREFIX):
+            _log.warning(
+                f"Removing module bay '{bay.name}' on {device}: adapter no "
+                "longer reported by iDRAC."
+            )
+            if module:
+                module.delete()
+            bay.delete()
+        elif module and _is_plugin_module(module):
+            _log.warning(
+                f"Removing module '{module}' from bay '{bay.name}' on {device}: "
+                "adapter no longer reported by iDRAC."
+            )
+            module.delete()
 
     return modules_synced, interfaces_synced
 
@@ -620,6 +820,10 @@ def _update_device(server, _log) -> None:
             _set_device_type(device, server.model, _log)
         except Exception as exc:
             _log.warning(f"Could not set device type: {exc}")
+    try:
+        _ensure_template_bays(device, _log)
+    except Exception as exc:
+        _log.warning(f"Could not create device-type module bays: {exc}")
 
 
 def _warn_on_duplicate_serial(device, service_tag: str, _log) -> None:

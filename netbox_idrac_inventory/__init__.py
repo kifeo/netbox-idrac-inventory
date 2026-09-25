@@ -1,6 +1,6 @@
 from netbox.plugins import PluginConfig
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 
 
 class DellInventoryConfig(PluginConfig):
@@ -12,8 +12,8 @@ class DellInventoryConfig(PluginConfig):
     base_url = "idrac-inventory"
     min_version = "4.1.0"
     # NetBox compares the full version ("4.6" would reject 4.6.4), so use
-    # .99 to admit every 4.6.x patch release.
-    max_version = "4.6.99"
+    # .99 to admit every 4.x patch release up to and including 4.7.
+    max_version = "4.7.99"
 
     # Global plugin settings. Per-device values (when set) take precedence.
     # Credentials are intentionally NOT stored in the database by default:
@@ -24,6 +24,10 @@ class DellInventoryConfig(PluginConfig):
         "idrac_default_password": "",  # prefer setting via PLUGINS_CONFIG / env
         "idrac_verify_ssl": False,
         "idrac_timeout": 30,
+        # RQ job timeout (seconds) for one server's sync. A full sync makes
+        # dozens of Redfish calls and older iDRACs (iDRAC8) take 2-30s per
+        # call, which overruns NetBox's default 300s RQ_DEFAULT_TIMEOUT.
+        "sync_job_timeout": 1200,
         # When True, the sync also writes service tag -> Device.serial.
         "update_device_serial": True,
         # When True, the sync creates a mgmt-only "iDRAC" interface with the

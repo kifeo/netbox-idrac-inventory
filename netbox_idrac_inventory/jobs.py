@@ -9,12 +9,15 @@ and mark the job as errored.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
+from django.conf import settings
 from netbox.jobs import JobRunner, system_job
 from netbox.plugins import get_plugin_config
+from rq import get_current_job
 
-from netbox_idrac_inventory.idrac.sync import PLUGIN_NAME, sync_server
+from netbox_idrac_inventory.idrac.sync import PLUGIN_NAME, _mark_failed, sync_server
 
 if TYPE_CHECKING:
     from users.models import User
@@ -56,7 +59,23 @@ class DellSyncJob(JobRunner):
 
         self.logger.info(f"DellSyncJob starting for server {server}")
 
+        started = time.monotonic()
         result = sync_server(server, logger=self.logger)
+
+        # RQ enforces the job timeout by raising JobTimeoutException (an
+        # Exception subclass) wherever the code happens to be. The iDRAC
+        # getters catch Exception to tolerate partial data, so the timeout
+        # gets swallowed and the sync would otherwise report "synced" with
+        # whatever it had collected so far.
+        rq_job = get_current_job()
+        budget = (rq_job.timeout if rq_job else None) or settings.RQ_DEFAULT_TIMEOUT
+        if time.monotonic() - started >= budget - 1:
+            exc = TimeoutError(
+                f"Sync exceeded the {budget}s job timeout; data may be partial. "
+                f"Raise the plugin's 'sync_job_timeout' setting."
+            )
+            _mark_failed(server, exc, self.logger)
+            raise exc
 
         # Surface the summary dict in the job's ``data`` field so component
         # counts show on the job detail page.
@@ -105,7 +124,11 @@ def enqueue_sync(server: DellServer, user: User | None = None):
         job = enqueue_sync(server, user=request.user)
         # job.pk can be used to redirect to the job detail page
     """
-    return DellSyncJob.enqueue(instance=server, user=user)
+    return DellSyncJob.enqueue(
+        instance=server,
+        user=user,
+        job_timeout=int(get_plugin_config(PLUGIN_NAME, "sync_job_timeout")),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +155,7 @@ class DellSyncAllJob(JobRunner):
 
         enqueued = 0
         for server in DellServer.objects.iterator():
-            DellSyncJob.enqueue(instance=server)
+            enqueue_sync(server)
             enqueued += 1
         self.logger.info(f"Scheduled Dell sync: enqueued {enqueued} sync jobs.")
 
