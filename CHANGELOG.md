@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.8
+
+### Fixes
+
+- The 0.3.7 per-port MAC lookup now falls back to the System's
+  `EthernetInterfaces/<port>` entry when the adapter's network device function
+  is empty (seen with the host powered off), so those ports no longer share
+  one MAC either.
+- A MAC left on an interface as a secondary address (e.g. by the syncs the
+  shared-MAC bug made) no longer pulls another port onto that interface: an
+  interface whose primary MAC is a different address is never matched by a
+  leftover one, and the sync now removes every MAC but the port's own from
+  the interfaces it manages.
+
 ## 0.3.7
 
 ### Fixes

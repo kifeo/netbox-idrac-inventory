@@ -559,7 +559,9 @@ class IdracClient:
         try:
             # The raw JSON connector lives on a resource, not on the Sushy
             # root object (which has no .get); reuse the System's connector.
-            conn = self._get_system()._conn
+            system = self._get_system()
+            conn = system._conn
+            self._system_path = getattr(system, "path", "") or ""
             chassis_list = self._conn.get_chassis_collection().get_members()
         except Exception as exc:
             log.warning("get_network_adapters: no chassis collection: %s", exc)
@@ -613,23 +615,41 @@ class IdracClient:
 
         return results
 
-    @staticmethod
-    def _get_function_mac(conn, a_path: str, port_id: str) -> str:
+    def _get_function_mac(self, conn, a_path: str, port_id: str, candidates=()) -> str:
         """
-        Permanent MAC of the network device function bound to *port_id*
-        (``<adapter>/NetworkDeviceFunctions/<port_id>``), or "" when unknown.
+        MAC of *port_id* itself, or "" when unknown.
+
+        Tried in order: the adapter's network device function for the port,
+        then the System's EthernetInterfaces entry for it (iDRAC names both
+        either ``<port>`` or ``<port>-<partition>``). Some firmwares leave the
+        device function empty, notably with the host powered off, while the
+        EthernetInterfaces entry still carries the MAC. When *candidates* is
+        given, only a MAC from that list is accepted.
         """
         if not port_id:
             return ""
-        try:
-            ndf = conn.get(
-                path=f"{a_path}/NetworkDeviceFunctions/{port_id}"
-            ).json()
-        except Exception as exc:
-            log.warning("_get_function_mac: %s/%s failed: %s", a_path, port_id, exc)
-            return ""
-        eth = ndf.get("Ethernet") or {}
-        return (eth.get("PermanentMACAddress") or eth.get("MACAddress") or "").strip()
+        wanted = {c.strip().upper() for c in candidates if c}
+        system_path = getattr(self, "_system_path", "") or ""
+        paths = [
+            f"{a_path}/NetworkDeviceFunctions/{port_id}",
+            f"{a_path}/NetworkDeviceFunctions/{port_id}-1",
+        ]
+        if system_path:
+            paths += [
+                f"{system_path}/EthernetInterfaces/{port_id}",
+                f"{system_path}/EthernetInterfaces/{port_id}-1",
+            ]
+        for path in paths:
+            try:
+                data = conn.get(path=path).json()
+            except Exception:
+                continue
+            eth = data.get("Ethernet") or data
+            mac = (eth.get("PermanentMACAddress") or eth.get("MACAddress") or "").strip()
+            if mac and (not wanted or mac.upper() in wanted):
+                return mac
+        log.warning("_get_function_mac: no own MAC found for %s", port_id)
+        return ""
 
     def _get_adapter_ports(self, conn, adapter: dict) -> dict:
         """
@@ -677,7 +697,7 @@ class IdracClient:
             # same MAC, and the MAC-first matching in the sync folds them into
             # one interface. The port's own function carries the right one.
             if len(macs) > 1 and a_path:
-                ndf_mac = self._get_function_mac(conn, a_path, port_id)
+                ndf_mac = self._get_function_mac(conn, a_path, port_id, macs)
                 if ndf_mac:
                     macs = [ndf_mac]
             speed = port.get("CurrentLinkSpeedMbps")

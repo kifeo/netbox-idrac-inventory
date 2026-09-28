@@ -283,13 +283,22 @@ def _match_interface_by_mac(device, mac: str, iface_ct):
 
     if not mac:
         return None
+    # An interface whose *primary* MAC is this one wins over one that merely
+    # still carries it as a leftover secondary MAC.
+    fallback = None
     for macobj in MACAddress.objects.filter(
         mac_address=mac, assigned_object_type=iface_ct
     ).exclude(assigned_object_id=None):
         candidate = macobj.assigned_object
-        if candidate is not None and candidate.device_id == device.pk:
+        if candidate is None or candidate.device_id != device.pk:
+            continue
+        if candidate.primary_mac_address_id == macobj.pk:
             return candidate
-    return None
+        # Primary MAC set to another address: that interface is another
+        # port's, this MAC is only a leftover on it.
+        if candidate.primary_mac_address_id is None:
+            fallback = fallback or candidate
+    return fallback
 
 
 def _sync_interface(device, module, port: dict, iface_ct, _log) -> bool:
@@ -384,6 +393,19 @@ def _sync_interface(device, module, port: dict, iface_ct, _log) -> bool:
         if iface.primary_mac_address_id != macobj.pk:
             iface.primary_mac_address = macobj
             iface.save(update_fields=["primary_mac_address"])
+
+        # A port has exactly one MAC. Any other MAC left on this interface is
+        # a leftover (e.g. from syncs that gave several ports the same MAC)
+        # and would make the MAC-first match pull another port onto it.
+        stale = MACAddress.objects.filter(
+            assigned_object_type=iface_ct, assigned_object_id=iface.pk
+        ).exclude(pk=macobj.pk)
+        for extra in stale:
+            _log.info(
+                f"Removing stale MAC {extra.mac_address} from '{iface}' on "
+                f"{device}: iDRAC reports {mac} for this port."
+            )
+            extra.delete()
 
     return True
 

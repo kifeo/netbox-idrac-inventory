@@ -1223,3 +1223,81 @@ class AdapterPortMacTest(TestCase):
             macs,
             {"NIC.Slot.4-1": "B4:96:91:A2:FD:F0", "NIC.Slot.4-2": "B4:96:91:A2:FD:F1"},
         )
+
+    def test_falls_back_to_system_ethernet_interface(self):
+        """Empty device functions (host off): use System EthernetInterfaces."""
+        from netbox_idrac_inventory.idrac.client import IdracClient
+
+        conn = self._conn()
+        pages_get = conn.get.side_effect
+        sys_path = "/redfish/v1/Systems/System.Embedded.1"
+        extra = {
+            f"{self.A}/NetworkDeviceFunctions/NIC.Slot.4-1": {"Ethernet": {}},
+            f"{self.A}/NetworkDeviceFunctions/NIC.Slot.4-2": {"Ethernet": {}},
+            f"{sys_path}/EthernetInterfaces/NIC.Slot.4-1": {"MACAddress": "B4:96:91:A2:FD:F0"},
+            f"{sys_path}/EthernetInterfaces/NIC.Slot.4-2": {"MACAddress": "B4:96:91:A2:FD:F1"},
+        }
+
+        def get(path):
+            if path in extra:
+                resp = MagicMock()
+                resp.json.return_value = extra[path]
+                return resp
+            return pages_get(path)
+
+        conn.get.side_effect = get
+        client = IdracClient("idrac.example", "root", "x")
+        client._system_path = sys_path
+        adapter = {
+            "@odata.id": self.A,
+            "NetworkPorts": {"@odata.id": f"{self.A}/NetworkPorts"},
+        }
+        macs = {p["name"]: p["mac_address"] for p in client._get_adapter_ports(conn, adapter)["ports"]}
+        self.assertEqual(
+            macs,
+            {"NIC.Slot.4-1": "B4:96:91:A2:FD:F0", "NIC.Slot.4-2": "B4:96:91:A2:FD:F1"},
+        )
+
+
+class SyncStaleSecondaryMacTest(TestCase):
+    """A leftover secondary MAC must not pull another port onto an interface."""
+
+    def test_stale_mac_does_not_fold_ports(self):
+        from dcim.models import Interface, MACAddress
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_idrac_inventory.idrac.sync import sync_server
+
+        server = _make_server(name="stale-mac-01")
+        device = server.device
+        sync_server(server, client=_make_fake_client(network_adapters=_sample_adapters()))
+
+        # Leftover of an earlier bad sync: port 1 also carries port 2's MAC.
+        port1 = Interface.objects.get(device=device, name="NIC.Integrated.1-1")
+        port2 = Interface.objects.get(device=device, name="NIC.Integrated.1-2")
+        port2.primary_mac_address = None
+        port2.save()
+        MACAddress.objects.filter(mac_address="5C:6F:69:88:06:D1").delete()
+        MACAddress.objects.create(
+            mac_address="5C:6F:69:88:06:D1",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=port1.pk,
+        )
+
+        sync_server(server, client=_make_fake_client(network_adapters=_sample_adapters()))
+
+        names = set(
+            Interface.objects.filter(device=device).values_list("name", flat=True)
+        )
+        self.assertEqual(names, {"NIC.Integrated.1-1", "NIC.Integrated.1-2"})
+        port1.refresh_from_db()
+        self.assertEqual(port1.primary_mac_address.mac_address, "5C:6F:69:88:06:D0")
+        self.assertEqual(
+            list(port1.mac_addresses.values_list("mac_address", flat=True)),
+            ["5C:6F:69:88:06:D0"],
+        )
+        self.assertEqual(
+            Interface.objects.get(device=device, name="NIC.Integrated.1-2")
+            .primary_mac_address.mac_address,
+            "5C:6F:69:88:06:D1",
+        )
