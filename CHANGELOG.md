@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.3.6 (unreleased)
+## 0.3.7
+
+### Fixes
+
+- Multi-port adapters lost ports on sync: some iDRAC firmwares (seen on an
+  Intel E810-C-Q2) list every MAC of the adapter in each NetworkPort's
+  `AssociatedNetworkAddresses`. The client took the first one, so all ports
+  got the same MAC and the MAC-first matching folded them into one interface
+  (port 1 vanished). When a port lists several MACs, the client now reads the
+  port's own `NetworkDeviceFunctions/<port>` `PermanentMACAddress`.
+
+## 0.3.6
 
 ### Compatibility
 

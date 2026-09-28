@@ -613,6 +613,24 @@ class IdracClient:
 
         return results
 
+    @staticmethod
+    def _get_function_mac(conn, a_path: str, port_id: str) -> str:
+        """
+        Permanent MAC of the network device function bound to *port_id*
+        (``<adapter>/NetworkDeviceFunctions/<port_id>``), or "" when unknown.
+        """
+        if not port_id:
+            return ""
+        try:
+            ndf = conn.get(
+                path=f"{a_path}/NetworkDeviceFunctions/{port_id}"
+            ).json()
+        except Exception as exc:
+            log.warning("_get_function_mac: %s/%s failed: %s", a_path, port_id, exc)
+            return ""
+        eth = ndf.get("Ethernet") or {}
+        return (eth.get("PermanentMACAddress") or eth.get("MACAddress") or "").strip()
+
     def _get_adapter_ports(self, conn, adapter: dict) -> dict:
         """
         Return ``{"ports": [...], "ports_complete": bool}`` for one network
@@ -653,13 +671,21 @@ class IdracClient:
                 continue
 
             macs = port.get("AssociatedNetworkAddresses") or []
+            port_id = port.get("Id", "")
+            # Some iDRAC firmwares (seen on an Intel E810-C-Q2) list every MAC
+            # of the adapter on each port. macs[0] then gives all ports the
+            # same MAC, and the MAC-first matching in the sync folds them into
+            # one interface. The port's own function carries the right one.
+            if len(macs) > 1 and a_path:
+                ndf_mac = self._get_function_mac(conn, a_path, port_id)
+                if ndf_mac:
+                    macs = [ndf_mac]
             speed = port.get("CurrentLinkSpeedMbps")
             if not speed:
                 caps = port.get("SupportedLinkCapabilities") or []
                 if caps:
                     speed = caps[0].get("LinkSpeedMbps")
 
-            port_id = port.get("Id", "")
             chassis, rport = lldp_map.get(port_id, ("", ""))
             # Legacy fallback: older OEM location on the NetworkPort itself.
             if not chassis and not rport:

@@ -1174,3 +1174,52 @@ class SyncPartialNetworkReadTest(TestCase):
 
         bay = ModuleBay.objects.get(device=server.device, name="NIC.Slot.2")
         self.assertIsNotNone(getattr(bay, "installed_module", None))
+
+
+class AdapterPortMacTest(TestCase):
+    """A port listing every MAC of its adapter gets its own function's MAC."""
+
+    A = "/redfish/v1/Chassis/System.Embedded.1/NetworkAdapters/NIC.Slot.4"
+    BOTH = ["B4:96:91:A2:FD:F1", "B4:96:91:A2:FD:F0"]
+
+    def _conn(self):
+        pages = {
+            f"{self.A}/NetworkPorts": {"Members": [
+                {"@odata.id": f"{self.A}/NetworkPorts/NIC.Slot.4-1"},
+                {"@odata.id": f"{self.A}/NetworkPorts/NIC.Slot.4-2"},
+            ]},
+            f"{self.A}/NetworkPorts/NIC.Slot.4-1": {
+                "Id": "NIC.Slot.4-1", "AssociatedNetworkAddresses": self.BOTH},
+            f"{self.A}/NetworkPorts/NIC.Slot.4-2": {
+                "Id": "NIC.Slot.4-2", "AssociatedNetworkAddresses": self.BOTH},
+            f"{self.A}/NetworkDeviceFunctions/NIC.Slot.4-1": {
+                "Ethernet": {"PermanentMACAddress": "B4:96:91:A2:FD:F0"}},
+            f"{self.A}/NetworkDeviceFunctions/NIC.Slot.4-2": {
+                "Ethernet": {"PermanentMACAddress": "B4:96:91:A2:FD:F1"}},
+        }
+
+        def get(path):
+            if path not in pages:
+                raise RuntimeError(f"404 {path}")
+            resp = MagicMock()
+            resp.json.return_value = pages[path]
+            return resp
+
+        conn = MagicMock()
+        conn.get.side_effect = get
+        return conn
+
+    def test_each_port_gets_its_function_mac(self):
+        from netbox_idrac_inventory.idrac.client import IdracClient
+
+        client = IdracClient("idrac.example", "root", "x")
+        adapter = {
+            "@odata.id": self.A,
+            "NetworkPorts": {"@odata.id": f"{self.A}/NetworkPorts"},
+        }
+        result = client._get_adapter_ports(self._conn(), adapter)
+        macs = {p["name"]: p["mac_address"] for p in result["ports"]}
+        self.assertEqual(
+            macs,
+            {"NIC.Slot.4-1": "B4:96:91:A2:FD:F0", "NIC.Slot.4-2": "B4:96:91:A2:FD:F1"},
+        )
